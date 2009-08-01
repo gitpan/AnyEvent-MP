@@ -1,0 +1,7 @@
+Revision history for AnyEvent::MP
+
+0.01 Sat Aug  1 11:43:31 CEST 2009
+	- dummy upload to reserve namespace on CPAN.
+
+0.0  Thu Jul 30 06:10:15 CEST 2009
+	- original version, an AnyEvent::AIO clone.

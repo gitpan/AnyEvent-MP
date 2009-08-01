@@ -1,0 +1,136 @@
+NAME
+    AnyEvent::MP - multi-processing/message-passing framework
+
+SYNOPSIS
+       use AnyEvent::MP;
+
+       NODE    # returns this node identifier
+       $NODE   # contains this node identifier
+
+       snd $port, type => data...;
+
+       rcv $port, smartmatch => $cb->($port, @msg);
+
+       # examples:
+       rcv $port2, ping => sub { snd $_[0], "pong"; 0 };
+       rcv $port1, pong => sub { warn "pong received\n" };
+       snd $port2, ping => $port1;
+
+       # more, smarter, matches (_any_ is exported by this module)
+       rcv $port, [child_died => $pid] => sub { ...
+       rcv $port, [_any_, _any_, 3] => sub { .. $_[2] is 3
+
+DESCRIPTION
+    This module (-family) implements a simple message passing framework.
+
+    Despite its simplicity, you can securely message other processes running
+    on the same or other hosts.
+
+    At the moment, this module family is severly brokena nd underdocumented,
+    so do not use. This was uploaded mainly to resreve the CPAN namespace -
+    stay tuned!
+
+CONCEPTS
+    port
+        A port is something you can send messages to with the "snd"
+        function, and you can register "rcv" handlers with. All "rcv"
+        handlers will receive messages they match, messages will not be
+        queued.
+
+    port id - "noderef#portname"
+        A port id is always the noderef, a hash-mark ("#") as separator,
+        followed by a port name (a printable string of unspecified format).
+
+    node
+        A node is a single process containing at least one port - the node
+        port. You can send messages to node ports to let them create new
+        ports, among other things.
+
+        Initially, nodes are either private (single-process only) or hidden
+        (connected to a master node only). Only when they epxlicitly "become
+        public" can you send them messages from unrelated other nodes.
+
+    noderef - "host:port,host:port...", "id@noderef", "id"
+        A noderef is a string that either uniquely identifies a given node
+        (for private and hidden nodes), or contains a recipe on how to reach
+        a given node (for public nodes).
+
+VARIABLES/FUNCTIONS
+    NODE / $NODE
+        The "NODE ()" function and the $NODE variable contain the noderef of
+        the local node. The value is initialised by a call to
+        "become_public" or "become_slave", after which all local port
+        identifiers become invalid.
+
+    snd $portid, type => @data
+    snd $portid, @msg
+        Send the given message to the given port ID, which can identify
+        either a local or a remote port.
+
+        While the message can be about anything, it is highly recommended to
+        use a constant string as first element.
+
+        The message data effectively becomes read-only after a call to this
+        function: modifying any argument is not allowed and can cause many
+        problems.
+
+        The type of data you can transfer depends on the transport protocol:
+        when JSON is used, then only strings, numbers and arrays and hashes
+        consisting of those are allowed (no objects). When Storable is used,
+        then anything that Storable can serialise and deserialise is
+        allowed, and for the local node, anything can be passed.
+
+    rcv $portid, type => $callback->(@msg)
+    rcv $portid, $smartmatch => $callback->(@msg)
+    rcv $portid, [$smartmatch...] => $callback->(@msg)
+        Register a callback on the port identified by $portid, which *must*
+        be a local port.
+
+        The callback has to return a true value when its work is done, after
+        which is will be removed, or a false value in which case it will
+        stay registered.
+
+        If the match is an array reference, then it will be matched against
+        the first elements of the message, otherwise only the first element
+        is being matched.
+
+        Any element in the match that is specified as "_any_" (a function
+        exported by this module) matches any single element of the message.
+
+        While not required, it is highly recommended that the first matching
+        element is a string identifying the message. The one-string-only
+        match is also the most efficient match (by far).
+
+NODE MESSAGES
+    Nodes understand the following messages sent to them. Many of them take
+    arguments called @reply, which will simply be used to compose a reply
+    message - $reply[0] is the port to reply to, $reply[1] the type and the
+    remaining arguments are simply the message data.
+
+    relay => $port, @msg
+        Simply forwards the message to the given port.
+
+    eval => $string[ @reply]
+        Evaluates the given string. If @reply is given, then a message of
+        the form "@reply, $@, @evalres" is sent.
+
+        Example: crash another node.
+
+           snd $othernode, eval => "exit";
+
+    time => @reply
+        Replies the the current node time to @reply.
+
+        Example: tell the current node to send the current time to $myport
+        in a "timereply" message.
+
+           snd $NODE, time => $myport, timereply => 1, 2;
+           # => snd $myport, timereply => 1, 2, <time>
+
+SEE ALSO
+    AnyEvent.
+
+AUTHOR
+     Marc Lehmann <schmorp@schmorp.de>
+     http://home.schmorp.de/
+
