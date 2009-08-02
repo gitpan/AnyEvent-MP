@@ -65,10 +65,12 @@ VARIABLES/FUNCTIONS
     snd $portid, type => @data
     snd $portid, @msg
         Send the given message to the given port ID, which can identify
-        either a local or a remote port.
+        either a local or a remote port, and can be either a string or
+        soemthignt hat stringifies a sa port ID (such as a port object :).
 
         While the message can be about anything, it is highly recommended to
-        use a constant string as first element.
+        use a string as first element (a portid, or some word that indicates
+        a request type etc.).
 
         The message data effectively becomes read-only after a call to this
         function: modifying any argument is not allowed and can cause many
@@ -80,11 +82,19 @@ VARIABLES/FUNCTIONS
         then anything that Storable can serialise and deserialise is
         allowed, and for the local node, anything can be passed.
 
-    rcv $portid, type => $callback->(@msg)
-    rcv $portid, $smartmatch => $callback->(@msg)
-    rcv $portid, [$smartmatch...] => $callback->(@msg)
-        Register a callback on the port identified by $portid, which *must*
-        be a local port.
+    $local_port = create_port
+        Create a new local port object. See the next section for allowed
+        methods.
+
+METHODS FOR PORT OBJECTS
+    "$port"
+        A port object stringifies to its port ID, so can be used directly
+        for "snd" operations.
+
+    $port->rcv (type => $callback->($port, @msg))
+    $port->rcv ($smartmatch => $callback->($port, @msg))
+    $port->rcv ([$smartmatch...] => $callback->($port, @msg))
+        Register a callback on the given port.
 
         The callback has to return a true value when its work is done, after
         which is will be removed, or a false value in which case it will
@@ -101,11 +111,47 @@ VARIABLES/FUNCTIONS
         element is a string identifying the message. The one-string-only
         match is also the most efficient match (by far).
 
+    $port->register ($name)
+        Registers the given port under the well known name $name. If the
+        name already exists it is replaced.
+
+        A port can only be registered under one well known name.
+
+    $port->destroy
+        Explicitly destroy/remove/nuke/vaporise the port.
+
+        Ports are normally kept alive by there mere existance alone, and
+        need to be destroyed explicitly.
+
+FUNCTIONS FOR NODES
+    mon $noderef, $callback->($noderef, $status, $)
+        Monitors the given noderef.
+
+    become_public endpoint...
+        Tells the node to become a public node, i.e. reachable from other
+        nodes.
+
+        If no arguments are given, or the first argument is "undef", then
+        AnyEvent::MP tries to bind on port 4040 on all IP addresses that the
+        local nodename resolves to.
+
+        Otherwise the first argument must be an array-reference with
+        transport endpoints ("ip:port", "hostname:port") or port numbers (in
+        which case the local nodename is used as hostname). The endpoints
+        are all resolved and will become the node reference.
+
 NODE MESSAGES
     Nodes understand the following messages sent to them. Many of them take
     arguments called @reply, which will simply be used to compose a reply
     message - $reply[0] is the port to reply to, $reply[1] the type and the
     remaining arguments are simply the message data.
+
+    wkp => $name, @reply
+        Replies with the port ID of the specified well-known port, or
+        "undef".
+
+    devnull => ...
+        Generic data sink/CPU heat conversion.
 
     relay => $port, @msg
         Simply forwards the message to the given port.

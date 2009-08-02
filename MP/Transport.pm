@@ -32,8 +32,6 @@ use AE ();
 use AnyEvent::Socket ();
 use AnyEvent::Handle ();
 
-use AnyEvent::MP::Util ();
-
 use base Exporter::;
 
 our $VERSION = '0.0';
@@ -115,6 +113,8 @@ sub mp_connect {
 
 =cut
 
+our @FRAMING_WANT = qw(json storable);#d##TODO#
+
 sub new {
    my ($class, %arg) = @_;
 
@@ -130,12 +130,14 @@ sub new {
          $arg{tls_ctx} ||= { sslv2 => 0, sslv3 => 0, tlsv1 => 1, verify => 1 };
       }
 
-      $arg{secret} = AnyEvent::MP::default_secret ()
+      $arg{secret} = AnyEvent::MP::Base::default_secret ()
          unless exists $arg{secret};
 
       $self->{hdl} = new AnyEvent::Handle
          fh       => delete $arg{fh},
          rbuf_max => 64 * 1024,
+         autocork => 1,
+         no_delay => 1,
          on_error => sub {
             $self->error ($_[2]);
          },
@@ -150,9 +152,9 @@ sub new {
 
       # send greeting
       my $lgreeting = "aemp;$PROTOCOL_VERSION;$PROTOCOL_VERSION" # version, min
-                    . ";$AnyEvent::MP::UNIQ"
-                    . ";$AnyEvent::MP::NODE"
-                    . ";" . (MIME::Base64::encode_base64 AnyEvent::MP::Util::nonce 33, "")
+                    . ";$AnyEvent::MP::Base::UNIQ"
+                    . ";$AnyEvent::MP::Base::NODE"
+                    . ";" . (MIME::Base64::encode_base64 AnyEvent::MP::Base::nonce (33), "")
                     . ";hmac_md6_64_256" # hardcoded atm.
                     . ";json" # hardcoded atm.
                     . ";$self->{peerhost};$self->{peerport}"
@@ -227,7 +229,7 @@ sub new {
             my $rmsg; $rmsg = sub  {
                $_[0]->push_read ($r_framing => $rmsg);
 
-               AnyEvent::MP::_inject ($_[1]);
+               AnyEvent::MP::Base::_inject ($_[1]);
             };
             $hdl->push_read ($r_framing => $rmsg);
          });
@@ -240,15 +242,19 @@ sub new {
 sub error {
    my ($self, $msg) = @_;
 
-   $self->{on_error}($self, $msg);
-   $self->{hdl}->destroy;
+   if ($self->{node} && $self->{node}{transport} == $self) {
+      $self->{node}->clr_transport;
+   }
+#   $self->{on_error}($self, $msg);
+   $self->destroy;
 }
 
 sub connected {
    my ($self) = @_;
 
-   (AnyEvent::MP::add_node ($self->{remote_node}))
-      ->set_transport ($self);
+   my $node = AnyEvent::MP::Base::add_node ($self->{remote_node});
+   Scalar::Util::weaken ($self->{node} = $node);
+   $node->set_transport ($self);
 }
 
 sub send {
