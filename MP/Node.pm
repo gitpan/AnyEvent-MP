@@ -15,6 +15,7 @@ package AnyEvent::MP::Node;
 use common::sense;
 
 use AE ();
+use AnyEvent::Util ();
 use AnyEvent::Socket ();
 
 use AnyEvent::MP::Transport ();
@@ -117,20 +118,57 @@ sub send {
    }
 }
 
+sub kill {
+   my ($self, $port, @reason) = @_;
+
+   $self->send (["", kil => $port, @reason]);
+}
+
+sub monitor {
+   my ($self, $portid, $cb) = @_;
+
+   return $cb->("node failed conenction")
+      if $self->{failed};
+
+   my $list = $self->{lmon}{$portid} ||= [];
+
+   $self->send (["", mon1 => $portid])
+      unless @$list;
+
+   push @$list, $cb;
+}
+
+sub unmonitor {
+   my ($self, $portid, $cb) = @_;
+
+   my $list = $self->{lmon}{$portid}
+      or return;
+
+   @$list = grep $_ != $cb, @$list;
+
+   unless (@$list) {
+      $self->send (["", mon0 => $portid]);
+      delete $self->{monitor}{$portid};
+   }
+}
+
 sub set_transport {
    my ($self, $transport) = @_;
 
-   delete $self->{trial};
-   delete $self->{next_connect};
+   $self->clr_transport
+      if $self->{transport};
 
    if (
       exists $self->{remote_uniq}
       && $self->{remote_uniq} ne $transport->{remote_uniq}
    ) {
-      # uniq changed, drop queue
-      delete $self->{queue};
-      #TODO: "DOWN"
+      # uniq changed, different node
+      $self->fail ("node restart detected");
    }
+
+   delete $self->{trial};
+   delete $self->{next_connect};
+   delete $self->{failed};
 
    $self->{remote_uniq} = $transport->{remote_uniq};
    $self->{transport}   = $transport;
@@ -139,11 +177,22 @@ sub set_transport {
       for @{ delete $self->{queue} || [] };
 }
 
+sub fail {
+   my ($self, @reason) = @_;
+
+   delete $self->{queue};
+
+   $self->{failed} = 1;
+
+   if (my $mon = delete $self->{lmon}) {
+      $_->(@reason) for map @$_, values %$mon;
+   }
+}
+
 sub clr_transport {
-   my ($self) = @_;
+   my ($self, @reason) = @_;
 
    delete $self->{transport};
-
    $self->connect;
 }
 
@@ -212,7 +261,36 @@ sub set_transport {
 }
 
 sub send {
-   AnyEvent::MP::Base::_inject ($_[1]);
+   local $AnyEvent::MP::Base::SRCNODE = $_[0];
+   AnyEvent::MP::Base::_inject (@{ $_[1] });
+}
+
+sub kill {
+   my ($self, $port, @reason) = @_;
+
+   delete $AnyEvent::MP::Base::PORT{$port};
+   delete $AnyEvent::MP::Base::PORT_DATA{$port};
+
+   my $mon = delete $AnyEvent::MP::Base::LMON{$port}
+      or !@reason
+      or $AnyEvent::MP::Base::WARN->("unmonitored local port $port died with reason: @reason");
+
+   $_->(@reason) for values %$mon;
+}
+
+sub monitor {
+   my ($self, $portid, $cb) = @_;
+
+   return $cb->()
+      unless exists $AnyEvent::MP::Base::PORT{$portid};
+
+   $AnyEvent::MP::Base::LMON{$portid}{$cb+0} = $cb;
+}
+
+sub unmonitor {
+   my ($self, $portid, $cb) = @_;
+
+   delete $AnyEvent::MP::Base::LMON{$portid}{$cb+0};
 }
 
 =head1 SEE ALSO

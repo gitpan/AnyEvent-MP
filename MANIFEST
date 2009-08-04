@@ -7,5 +7,8 @@ MP.pm
 MP/Base.pm
 MP/Node.pm
 MP/Transport.pm
+MP/Intro.pod
+eg/chat_server
+eg/chat_client
 t/00_load.t
 META.yml                                 Module meta-data (added by MakeMaker)

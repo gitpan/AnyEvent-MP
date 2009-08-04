@@ -1,0 +1,69 @@
+#!/opt/bin/perl
+
+use AnyEvent;
+use AnyEvent::Handle;
+use AnyEvent::MP;
+
+my $server_node = "127.0.0.1:1299";
+
+my $client_port = port;
+
+snd $server_node, lookup => "chatter", $client_port, "resolved";
+
+my $resolved_cv = AnyEvent->condvar;
+my $server_port;
+
+# setup a receiver callback for the 'resolved' message:
+rcv $client_port, resolved => sub {
+   my ($tag, $chatter_port_id) = @_;
+
+   print "Resolved the server port 'chatter' to $chatter_port_id\n";
+   $server_port = $chatter_port_id;
+
+   $resolved_cv->send;
+   1
+};
+
+# lets block the client until we have resolved the server port.
+$resolved_cv->recv;
+
+# now setup another receiver callback for the chat messages:
+rcv $client_port, message => sub {
+   my ($tag, $msg) = @_;
+
+   print "chat> $msg\n";
+   0
+};
+
+# send a 'join' message to the server:
+snd $server_port, join => "$client_port";
+
+sub send_message {
+   my ($msg) = @_;
+
+   snd $server_port, message => $msg;
+}
+
+# make an AnyEvent condition variable for the 'quit' condition
+# (when we want to exit the client).
+my $quit_cv = AnyEvent->condvar;
+
+my $stdin_hdl = AnyEvent::Handle->new (
+   fh       => *STDIN,
+   on_error => sub { $quit_cv->send },
+   on_read  => sub {
+      my ($hdl) = @_;
+
+      $hdl->push_read (line => sub {
+         my ($hdl, $line) = @_;
+
+         if ($line =~ /^\/quit/) { # /quit will end the client
+            $quit_cv->send;
+         } else {
+            send_message ($line);
+         }
+      });
+   }
+);
+
+$quit_cv->recv;

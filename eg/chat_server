@@ -1,0 +1,34 @@
+#!/opt/bin/perl
+
+use AnyEvent;
+use AnyEvent::MP;
+
+become_public "127.0.0.1:1299";
+
+my $chatter_port = port;
+
+reg $chatter_port, "chatter";
+
+my %client_ports;
+
+rcv $chatter_port,
+   join => sub {
+      my ($tag, $client_port) = @_;
+
+      print "got new client port: $client_port\n";
+      $client_ports{$client_port} = 1;
+
+      0
+   },
+   message => sub {
+      my ($tag, $msg) = @_;
+
+      print "message> $msg\n";
+
+      snd $_, message => $msg
+         for keys %client_ports;
+
+      0
+   };
+
+AnyEvent->condvar->recv;

@@ -6,10 +6,13 @@ AnyEvent::MP - multi-processing/message-passing framework
 
    use AnyEvent::MP;
 
-   NODE    # returns this node identifier
-   $NODE   # contains this node identifier
+   $NODE      # contains this node's noderef
+   NODE       # returns this node's noderef
+   NODE $port # returns the noderef of the port
 
    snd $port, type => data...;
+
+   $SELF      # receiving/own port id in rcv callbacks
 
    rcv $port, smartmatch => $cb->($port, @msg);
 
@@ -29,9 +32,12 @@ This module (-family) implements a simple message passing framework.
 Despite its simplicity, you can securely message other processes running
 on the same or other hosts.
 
-At the moment, this module family is severly brokena nd underdocumented,
-so do not use. This was uploaded mainly to resreve the CPAN namespace -
-stay tuned!
+For an introduction to this module family, see the L<AnyEvent::MP::Intro>
+manual page.
+
+At the moment, this module family is severly broken and underdocumented,
+so do not use. This was uploaded mainly to reserve the CPAN namespace -
+stay tuned! The basic API should be finished, however.
 
 =head1 CONCEPTS
 
@@ -84,18 +90,43 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = '0.02';
+our $VERSION = '0.1';
 our @EXPORT = qw(
-   NODE $NODE $PORT snd rcv _any_
-   create_port create_port_on
+   NODE $NODE *SELF node_of _any_
    become_slave become_public
+   snd rcv mon kil reg psub
+   port
 );
 
-=item NODE / $NODE
+our $SELF;
 
-The C<NODE ()> function and the C<$NODE> variable contain the noderef of
-the local node. The value is initialised by a call to C<become_public> or
-C<become_slave>, after which all local port identifiers become invalid.
+sub _self_die() {
+   my $msg = $@;
+   $msg =~ s/\n+$// unless ref $msg;
+   kil $SELF, die => $msg;
+}
+
+=item $thisnode = NODE / $NODE
+
+The C<NODE> function returns, and the C<$NODE> variable contains
+the noderef of the local node. The value is initialised by a call
+to C<become_public> or C<become_slave>, after which all local port
+identifiers become invalid.
+
+=item $noderef = node_of $portid
+
+Extracts and returns the noderef from a portid or a noderef.
+
+=item $SELF
+
+Contains the current port id while executing C<rcv> callbacks or C<psub>
+blocks.
+
+=item SELF, %SELF, @SELF...
+
+Due to some quirks in how perl exports variables, it is impossible to
+just export C<$SELF>, all the symbols called C<SELF> are exported by this
+module, but only C<$SELF> is currently used.
 
 =item snd $portid, type => @data
 
@@ -119,74 +150,219 @@ of those are allowed (no objects). When Storable is used, then anything
 that Storable can serialise and deserialise is allowed, and for the local
 node, anything can be passed.
 
-=item $local_port = create_port
+=item kil $portid[, @reason]
 
-Create a new local port object. See the next section for allowed methods.
+Kill the specified port with the given C<@reason>.
+
+If no C<@reason> is specified, then the port is killed "normally" (linked
+ports will not be kileld, or even notified).
+
+Otherwise, linked ports get killed with the same reason (second form of
+C<mon>, see below).
+
+Runtime errors while evaluating C<rcv> callbacks or inside C<psub> blocks
+will be reported as reason C<< die => $@ >>.
+
+Transport/communication errors are reported as C<< transport_error =>
+$message >>.
+
+=item $guard = mon $portid, $cb->(@reason)
+
+=item $guard = mon $portid, $otherport
+
+=item $guard = mon $portid, $otherport, @msg
+
+Monitor the given port and do something when the port is killed.
+
+In the first form, the callback is simply called with any number
+of C<@reason> elements (no @reason means that the port was deleted
+"normally"). Note also that I<< the callback B<must> never die >>, so use
+C<eval> if unsure.
+
+In the second form, the other port will be C<kil>'ed with C<@reason>, iff
+a @reason was specified, i.e. on "normal" kils nothing happens, while
+under all other conditions, the other port is killed with the same reason.
+
+In the last form, a message of the form C<@msg, @reason> will be C<snd>.
+
+Example: call a given callback when C<$port> is killed.
+
+   mon $port, sub { warn "port died because of <@_>\n" };
+
+Example: kill ourselves when C<$port> is killed abnormally.
+
+   mon $port, $self;
+
+Example: send us a restart message another C<$port> is killed.
+
+   mon $port, $self => "restart";
 
 =cut
 
-sub create_port {
-   my $id = "$AnyEvent::MP::Base::UNIQ." . ++$AnyEvent::MP::Base::ID;
+sub mon {
+   my ($noderef, $port, $cb) = ((split /#/, shift, 2), shift);
 
-   my $self = bless {
-      id    => "$NODE#$id",
-      names => [$id],
-   }, "AnyEvent::MP::Port";
+   my $node = $NODE{$noderef} || add_node $noderef;
 
-   $AnyEvent::MP::Base::PORT{$id} = sub {
-      unshift @_, $self;
-
-      for (@{ $self->{rc0}{$_[1]} }) {
-         $_ && &{$_->[0]}
-            && undef $_;
+   #TODO: ports must not be references
+   if (!ref $cb or "AnyEvent::MP::Port" eq ref $cb) {
+      if (@_) {
+         # send a kill info message
+         my (@msg) = ($cb, @_);
+         $cb = sub { snd @msg, @_ };
+      } else {
+         # simply kill other port
+         my $port = $cb;
+         $cb = sub { kil $port, @_ if @_ };
       }
+   }
 
-      for (@{ $self->{rcv}{$_[1]} }) {
-         $_ && [@_[1 .. @{$_->[1]}]] ~~ $_->[1]
-            && &{$_->[0]}
-            && undef $_;
-      }
+   $node->monitor ($port, $cb);
 
-      for (@{ $self->{any} }) {
-         $_ && [@_[0 .. $#{$_->[1]}]] ~~ $_->[1]
-            && &{$_->[0]}
-            && undef $_;
-      }
-   };
-
-   $self
+   defined wantarray
+      and AnyEvent::Util::guard { $node->unmonitor ($port, $cb) }
 }
 
-package AnyEvent::MP::Port;
+=item $guard = mon_guard $port, $ref, $ref...
 
-=back
+Monitors the given C<$port> and keeps the passed references. When the port
+is killed, the references will be freed.
 
-=head1 METHODS FOR PORT OBJECTS
+Optionally returns a guard that will stop the monitoring.
 
-=over 4
+This function is useful when you create e.g. timers or other watchers and
+want to free them when the port gets killed:
 
-=item "$port"
-
-A port object stringifies to its port ID, so can be used directly for
-C<snd> operations.
+  $port->rcv (start => sub {
+     my $timer; $timer = mon_guard $port, AE::timer 1, 1, sub {
+        undef $timer if 0.9 < rand;
+     });
+  });
 
 =cut
 
-use overload
-   '""'     => sub { $_[0]{id} },
-   fallback => 1;
+sub mon_guard {
+   my ($port, @refs) = @_;
 
-=item $port->rcv (type => $callback->($port, @msg))
+   mon $port, sub { 0 && @refs }
+}
 
-=item $port->rcv ($smartmatch => $callback->($port, @msg))
+=item lnk $port1, $port2
 
-=item $port->rcv ([$smartmatch...] => $callback->($port, @msg))
+Link two ports. This is simply a shorthand for:
 
-Register a callback on the given port.
+   mon $port1, $port2;
+   mon $port2, $port1;
+
+It means that if either one is killed abnormally, the other one gets
+killed as well.
+
+=item $local_port = port
+
+Create a new local port object that supports message matching.
+
+=item $portid = port { my @msg = @_; $finished }
+
+Creates a "mini port", that is, a very lightweight port without any
+pattern matching behind it, and returns its ID.
+
+The block will be called for every message received on the port. When the
+callback returns a true value its job is considered "done" and the port
+will be destroyed. Otherwise it will stay alive.
+
+The message will be passed as-is, no extra argument (i.e. no port id) will
+be passed to the callback.
+
+If you need the local port id in the callback, this works nicely:
+
+   my $port; $port = miniport {
+      snd $otherport, reply => $port;
+   };
+
+=cut
+
+sub port(;&) {
+   my $id = "$UNIQ." . $ID++;
+   my $port = "$NODE#$id";
+
+   if (@_) {
+      my $cb = shift;
+      $PORT{$id} = sub {
+         local $SELF = $port;
+         eval {
+            &$cb
+               and kil $id;
+         };
+         _self_die if $@;
+      };
+   } else {
+      my $self = bless {
+         id    => "$NODE#$id",
+      }, "AnyEvent::MP::Port";
+
+      $PORT_DATA{$id} = $self;
+      $PORT{$id} = sub {
+         local $SELF = $port;
+
+         eval {
+            for (@{ $self->{rc0}{$_[0]} }) {
+               $_ && &{$_->[0]}
+                  && undef $_;
+            }
+
+            for (@{ $self->{rcv}{$_[0]} }) {
+               $_ && [@_[1 .. @{$_->[1]}]] ~~ $_->[1]
+                  && &{$_->[0]}
+                  && undef $_;
+            }
+
+            for (@{ $self->{any} }) {
+               $_ && [@_[0 .. $#{$_->[1]}]] ~~ $_->[1]
+                  && &{$_->[0]}
+                  && undef $_;
+            }
+         };
+         _self_die if $@;
+      };
+   }
+
+   $port
+}
+
+=item reg $portid, $name
+
+Registers the given port under the name C<$name>. If the name already
+exists it is replaced.
+
+A port can only be registered under one well known name.
+
+A port automatically becomes unregistered when it is killed.
+
+=cut
+
+sub reg(@) {
+   my ($portid, $name) = @_;
+
+   $REG{$name} = $portid;
+}
+
+=item rcv $portid, tagstring        => $callback->(@msg), ...
+
+=item rcv $portid, $smartmatch      => $callback->(@msg), ...
+
+=item rcv $portid, [$smartmatch...] => $callback->(@msg), ...
+
+Register callbacks to be called on matching messages on the given port.
 
 The callback has to return a true value when its work is done, after
 which is will be removed, or a false value in which case it will stay
 registered.
+
+The global C<$SELF> (exported by this module) contains C<$portid> while
+executing the callback.
+
+Runtime errors wdurign callback execution will result in the port being
+C<kil>ed.
 
 If the match is an array reference, then it will be matched against the
 first elements of the message, otherwise only the first element is being
@@ -202,52 +378,69 @@ also the most efficient match (by far).
 =cut
 
 sub rcv($@) {
-   my ($self, $match, $cb) = @_;
+   my ($noderef, $port) = split /#/, shift, 2;
 
-   if (!ref $match) {
-      push @{ $self->{rc0}{$match}      }, [$cb];
-   } elsif (("ARRAY" eq ref $match && !ref $match->[0])) {
-      my ($type, @match) = @$match;
-      @match
-         ? push @{ $self->{rcv}{$match->[0]} }, [$cb, \@match]
-         : push @{ $self->{rc0}{$match->[0]} }, [$cb];
-   } else {
-      push @{ $self->{any}              }, [$cb, $match];
+   ($NODE{$noderef} || add_node $noderef) == $NODE{""}
+      or Carp::croak "$noderef#$port: rcv can only be called on local ports, caught";
+
+   my $self = $PORT_DATA{$port}
+      or Carp::croak "$noderef#$port: rcv can only be called on message matching ports, caught";
+
+   "AnyEvent::MP::Port" eq ref $self
+      or Carp::croak "$noderef#$port: rcv can only be called on message matching ports, caught";
+
+   while (@_) {
+      my ($match, $cb) = splice @_, 0, 2;
+
+      if (!ref $match) {
+         push @{ $self->{rc0}{$match}      }, [$cb];
+      } elsif (("ARRAY" eq ref $match && !ref $match->[0])) {
+         my ($type, @match) = @$match;
+         @match
+            ? push @{ $self->{rcv}{$match->[0]} }, [$cb, \@match]
+            : push @{ $self->{rc0}{$match->[0]} }, [$cb];
+      } else {
+         push @{ $self->{any}              }, [$cb, $match];
+      }
    }
 }
 
-=item $port->register ($name)
+=item $closure = psub { BLOCK }
 
-Registers the given port under the well known name C<$name>. If the name
-already exists it is replaced.
+Remembers C<$SELF> and creates a closure out of the BLOCK. When the
+closure is executed, sets up the environment in the same way as in C<rcv>
+callbacks, i.e. runtime errors will cause the port to get C<kil>ed.
 
-A port can only be registered under one well known name.
+This is useful when you register callbacks from C<rcv> callbacks:
 
-=cut
-
-sub register {
-   my ($self, $name) = @_;
-
-   $self->{wkname} = $name;
-   $AnyEvent::MP::Base::WKP{$name} = "$self";
-}
-
-=item $port->destroy
-
-Explicitly destroy/remove/nuke/vaporise the port.
-
-Ports are normally kept alive by there mere existance alone, and need to
-be destroyed explicitly.
+   rcv delayed_reply => sub {
+      my ($delay, @reply) = @_;
+      my $timer = AE::timer $delay, 0, psub {
+         snd @reply, $SELF;
+      };
+   };
 
 =cut
 
-sub destroy {
-   my ($self) = @_;
+sub psub(&) {
+   my $cb = shift;
 
-   delete $AnyEvent::MP::Base::WKP{ $self->{wkname} };
+   my $port = $SELF
+      or Carp::croak "psub can only be called from within rcv or psub callbacks, not";
 
-   delete $AnyEvent::MP::Base::PORT{$_}
-      for @{ $self->{names} };
+   sub {
+      local $SELF = $port;
+
+      if (wantarray) {
+         my @res = eval { &$cb };
+         _self_die if $@;
+         @res
+      } else {
+         my $res = eval { &$cb };
+         _self_die if $@;
+         $res
+      }
+   }
 }
 
 =back
@@ -255,10 +448,6 @@ sub destroy {
 =head1 FUNCTIONS FOR NODES
 
 =over 4
-
-=item mon $noderef, $callback->($noderef, $status, $)
-
-Monitors the given noderef.
 
 =item become_public endpoint...
 
@@ -288,7 +477,7 @@ the remaining arguments are simply the message data.
 
 =cut
 
-=item wkp => $name, @reply
+=item lookup => $name, @reply
 
 Replies with the port ID of the specified well-known port, or C<undef>.
 

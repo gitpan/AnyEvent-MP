@@ -14,6 +14,7 @@ my $mm = MM->new({
        AnyEvent         => 4.9,
        Digest::MD6      => 0,
        Digest::HMAC_MD6 => 0,
+       MIME::Base64     => 3,
        JSON::XS         => 2.24,
        common::sense    => 0,
     },

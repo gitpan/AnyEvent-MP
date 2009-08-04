@@ -4,10 +4,13 @@ NAME
 SYNOPSIS
        use AnyEvent::MP;
 
-       NODE    # returns this node identifier
-       $NODE   # contains this node identifier
+       $NODE      # contains this node's noderef
+       NODE       # returns this node's noderef
+       NODE $port # returns the noderef of the port
 
        snd $port, type => data...;
+
+       $SELF      # receiving/own port id in rcv callbacks
 
        rcv $port, smartmatch => $cb->($port, @msg);
 
@@ -26,9 +29,12 @@ DESCRIPTION
     Despite its simplicity, you can securely message other processes running
     on the same or other hosts.
 
-    At the moment, this module family is severly brokena nd underdocumented,
-    so do not use. This was uploaded mainly to resreve the CPAN namespace -
-    stay tuned!
+    For an introduction to this module family, see the AnyEvent::MP::Intro
+    manual page.
+
+    At the moment, this module family is severly broken and underdocumented,
+    so do not use. This was uploaded mainly to reserve the CPAN namespace -
+    stay tuned! The basic API should be finished, however.
 
 CONCEPTS
     port
@@ -56,11 +62,23 @@ CONCEPTS
         a given node (for public nodes).
 
 VARIABLES/FUNCTIONS
-    NODE / $NODE
-        The "NODE ()" function and the $NODE variable contain the noderef of
-        the local node. The value is initialised by a call to
+    $thisnode = NODE / $NODE
+        The "NODE" function returns, and the $NODE variable contains the
+        noderef of the local node. The value is initialised by a call to
         "become_public" or "become_slave", after which all local port
         identifiers become invalid.
+
+    $noderef = node_of $portid
+        Extracts and returns the noderef from a portid or a noderef.
+
+    $SELF
+        Contains the current port id while executing "rcv" callbacks or
+        "psub" blocks.
+
+    SELF, %SELF, @SELF...
+        Due to some quirks in how perl exports variables, it is impossible
+        to just export $SELF, all the symbols called "SELF" are exported by
+        this module, but only $SELF is currently used.
 
     snd $portid, type => @data
     snd $portid, @msg
@@ -82,23 +100,118 @@ VARIABLES/FUNCTIONS
         then anything that Storable can serialise and deserialise is
         allowed, and for the local node, anything can be passed.
 
-    $local_port = create_port
-        Create a new local port object. See the next section for allowed
-        methods.
+    kil $portid[, @reason]
+        Kill the specified port with the given @reason.
 
-METHODS FOR PORT OBJECTS
-    "$port"
-        A port object stringifies to its port ID, so can be used directly
-        for "snd" operations.
+        If no @reason is specified, then the port is killed "normally"
+        (linked ports will not be kileld, or even notified).
 
-    $port->rcv (type => $callback->($port, @msg))
-    $port->rcv ($smartmatch => $callback->($port, @msg))
-    $port->rcv ([$smartmatch...] => $callback->($port, @msg))
-        Register a callback on the given port.
+        Otherwise, linked ports get killed with the same reason (second form
+        of "mon", see below).
+
+        Runtime errors while evaluating "rcv" callbacks or inside "psub"
+        blocks will be reported as reason "die => $@".
+
+        Transport/communication errors are reported as "transport_error =>
+        $message".
+
+    $guard = mon $portid, $cb->(@reason)
+    $guard = mon $portid, $otherport
+    $guard = mon $portid, $otherport, @msg
+        Monitor the given port and do something when the port is killed.
+
+        In the first form, the callback is simply called with any number of
+        @reason elements (no @reason means that the port was deleted
+        "normally"). Note also that *the callback must never die*, so use
+        "eval" if unsure.
+
+        In the second form, the other port will be "kil"'ed with @reason,
+        iff a @reason was specified, i.e. on "normal" kils nothing happens,
+        while under all other conditions, the other port is killed with the
+        same reason.
+
+        In the last form, a message of the form "@msg, @reason" will be
+        "snd".
+
+        Example: call a given callback when $port is killed.
+
+           mon $port, sub { warn "port died because of <@_>\n" };
+
+        Example: kill ourselves when $port is killed abnormally.
+
+           mon $port, $self;
+
+        Example: send us a restart message another $port is killed.
+
+           mon $port, $self => "restart";
+
+    $guard = mon_guard $port, $ref, $ref...
+        Monitors the given $port and keeps the passed references. When the
+        port is killed, the references will be freed.
+
+        Optionally returns a guard that will stop the monitoring.
+
+        This function is useful when you create e.g. timers or other
+        watchers and want to free them when the port gets killed:
+
+          $port->rcv (start => sub {
+             my $timer; $timer = mon_guard $port, AE::timer 1, 1, sub {
+                undef $timer if 0.9 < rand;
+             });
+          });
+
+    lnk $port1, $port2
+        Link two ports. This is simply a shorthand for:
+
+           mon $port1, $port2;
+           mon $port2, $port1;
+
+        It means that if either one is killed abnormally, the other one gets
+        killed as well.
+
+    $local_port = port
+        Create a new local port object that supports message matching.
+
+    $portid = port { my @msg = @_; $finished }
+        Creates a "mini port", that is, a very lightweight port without any
+        pattern matching behind it, and returns its ID.
+
+        The block will be called for every message received on the port.
+        When the callback returns a true value its job is considered "done"
+        and the port will be destroyed. Otherwise it will stay alive.
+
+        The message will be passed as-is, no extra argument (i.e. no port
+        id) will be passed to the callback.
+
+        If you need the local port id in the callback, this works nicely:
+
+           my $port; $port = miniport {
+              snd $otherport, reply => $port;
+           };
+
+    reg $portid, $name
+        Registers the given port under the name $name. If the name already
+        exists it is replaced.
+
+        A port can only be registered under one well known name.
+
+        A port automatically becomes unregistered when it is killed.
+
+    rcv $portid, tagstring => $callback->(@msg), ...
+    rcv $portid, $smartmatch => $callback->(@msg), ...
+    rcv $portid, [$smartmatch...] => $callback->(@msg), ...
+        Register callbacks to be called on matching messages on the given
+        port.
 
         The callback has to return a true value when its work is done, after
         which is will be removed, or a false value in which case it will
         stay registered.
+
+        The global $SELF (exported by this module) contains $portid while
+        executing the callback.
+
+        Runtime errors wdurign callback execution will result in the port
+        being "kil"ed.
 
         If the match is an array reference, then it will be matched against
         the first elements of the message, otherwise only the first element
@@ -111,22 +224,22 @@ METHODS FOR PORT OBJECTS
         element is a string identifying the message. The one-string-only
         match is also the most efficient match (by far).
 
-    $port->register ($name)
-        Registers the given port under the well known name $name. If the
-        name already exists it is replaced.
+    $closure = psub { BLOCK }
+        Remembers $SELF and creates a closure out of the BLOCK. When the
+        closure is executed, sets up the environment in the same way as in
+        "rcv" callbacks, i.e. runtime errors will cause the port to get
+        "kil"ed.
 
-        A port can only be registered under one well known name.
+        This is useful when you register callbacks from "rcv" callbacks:
 
-    $port->destroy
-        Explicitly destroy/remove/nuke/vaporise the port.
-
-        Ports are normally kept alive by there mere existance alone, and
-        need to be destroyed explicitly.
+           rcv delayed_reply => sub {
+              my ($delay, @reply) = @_;
+              my $timer = AE::timer $delay, 0, psub {
+                 snd @reply, $SELF;
+              };
+           };
 
 FUNCTIONS FOR NODES
-    mon $noderef, $callback->($noderef, $status, $)
-        Monitors the given noderef.
-
     become_public endpoint...
         Tells the node to become a public node, i.e. reachable from other
         nodes.
@@ -146,7 +259,7 @@ NODE MESSAGES
     message - $reply[0] is the port to reply to, $reply[1] the type and the
     remaining arguments are simply the message data.
 
-    wkp => $name, @reply
+    lookup => $name, @reply
         Replies with the port ID of the specified well-known port, or
         "undef".
 
