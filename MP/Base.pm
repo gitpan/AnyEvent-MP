@@ -31,15 +31,16 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.01';
+our $VERSION = '0.4';
 our @EXPORT = qw(
-   %NODE %PORT %PORT_DATA %REG $UNIQ $ID add_node
+   %NODE %PORT %PORT_DATA %REG $UNIQ $RUNIQ $ID add_node load_func
 
    NODE $NODE node_of snd kil _any_
-   become_slave become_public
+   resolve_node initialise_node
 );
 
 our $DEFAULT_SECRET;
+our $DEFAULT_PORT = "4040";
 
 our $CONNECT_INTERVAL =  5; # new connect every 5s, at least
 our $CONNECT_TIMEOUT  = 30; # includes handshake
@@ -77,6 +78,24 @@ sub nonce($) {
    $nonce
 }
 
+sub asciibits($) {
+   my $data = $_[0];
+
+   if (eval "use Math::GMP 2.05; 1") {
+      $data = Math::GMP::get_str_gmp (
+                  (Math::GMP::new_from_scalar_with_base (+(unpack "H*", $data), 16)),
+                  62
+              );
+   } else {
+      $data = MIME::Base64::encode_base64 $data, "";
+      $data =~ s/=//;
+      $data =~ s/\//s/g;
+      $data =~ s/\+/p/g;
+   }
+
+   $data
+}
+
 sub default_secret {
    unless (defined $DEFAULT_SECRET) {
       if (open my $fh, "<$ENV{HOME}/.aemp-secret") {
@@ -90,16 +109,16 @@ sub default_secret {
 }
 
 sub gen_uniq {
-   my $uniq = pack "wN", $$, time;
-   $uniq = MIME::Base64::encode_base64 $uniq, "";
-   $uniq =~ s/=+$//;
-   $uniq
+   asciibits pack "wNa*", $$, time, nonce 2
 }
 
-our $UNIQ = gen_uniq; # per-process/node unique cookie
-our $ID   = "a";
 our $PUBLIC = 0;
-our $NODE = unpack "H*", nonce 16;
+our $SLAVE  = 0;
+
+our $NODE   = asciibits nonce 16;
+our $RUNIQ  = $NODE; # remote uniq value
+our $UNIQ   = gen_uniq; # per-process/node unique cookie
+our $ID     = "a";
 
 our %NODE; # node id to transport mapping, or "undef", for local node
 our (%PORT, %PORT_DATA); # local ports
@@ -126,7 +145,10 @@ sub node_of($) {
 sub _ANY_() { 1 }
 sub _any_() { \&_ANY_ }
 
+sub TRACE() { 0 }
+
 sub _inject {
+   warn "RCV $SRCNODE->{noderef} -> @_\n" if TRACE;#d#
    &{ $PORT{+shift} or return };
 }
 
@@ -141,8 +163,27 @@ sub add_node {
          if exists $NODE{$_};
    }
 
-   # for indirect sends, use a different class
-   my $node = new AnyEvent::MP::Node::Direct $noderef;
+   # new node, check validity
+   my $node;
+
+   if ($noderef =~ /^slave\/.+$/) {
+      $node = new AnyEvent::MP::Node::Slave $noderef;
+
+   } else {
+      for (split /,/, $noderef) {
+         my ($host, $port) = AnyEvent::Socket::parse_hostport $_
+            or Carp::croak "$noderef: not a resolved node reference ('$_' not parsable)";
+
+         $port > 0
+            or Carp::croak "$noderef: not a resolved node reference ('$_' contains non-numeric port)";
+
+         AnyEvent::Socket::parse_address $host
+            or Carp::croak "$noderef: not a resolved node reference ('$_' contains unresolved address)";
+      }
+
+      # TODO: for indirect sends, use a different class
+      $node = new AnyEvent::MP::Node::Direct $noderef;
+   }
 
    $NODE{$_} = $node
       for $noderef, split /,/, $noderef;
@@ -151,26 +192,113 @@ sub add_node {
 }
 
 sub snd(@) {
-   my ($noderef, $port) = split /#/, shift, 2;
+   my ($noderef, $portid) = split /#/, shift, 2;
+
+   warn "SND $noderef <- $portid @_\n" if TRACE;#d#
 
    ($NODE{$noderef} || add_node $noderef)
-      ->send ([$port, @_]);
+      ->send (["$portid", @_]);
 }
 
 sub kil(@) {
-   my ($noderef, $port) = split /#/, shift, 2;
+   my ($noderef, $portid) = split /#/, shift, 2;
+
+   length $portid
+      or Carp::croak "$noderef#$portid: killing a node port is not allowed, caught";
 
    ($NODE{$noderef} || add_node $noderef)
-      ->kill ($port, @_);
+      ->kill ("$portid", @_);
 }
 
-sub become_public {
-   return if $PUBLIC;
+sub resolve_node($) {
+   my ($noderef) = @_;
 
-   my $noderef = join ",", @_;
-   my @args = @_;
+   my $cv = AE::cv;
+   my @res;
 
-   $NODE = (AnyEvent::MP::Node::normalise_noderef $noderef)->recv;
+   $cv->begin (sub {
+      my %seen;
+      my @refs;
+      for (sort { $a->[0] <=> $b->[0] } @res) {
+         push @refs, $_->[1] unless $seen{$_->[1]}++
+      }
+      shift->send (join ",", @refs);
+   });
+
+   $noderef = $DEFAULT_PORT unless length $noderef;
+
+   my $idx;
+   for my $t (split /,/, $noderef) {
+      my $pri = ++$idx;
+      
+      if ($t =~ /^\d*$/) {
+         require POSIX;
+         my $nodename = (POSIX::uname ())[1];
+
+         $cv->begin;
+         AnyEvent::Socket::resolve_sockaddr $nodename, $t || "aemp=$DEFAULT_PORT", "tcp", 0, undef, sub {
+            for (@_) {
+               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
+               push @res, [
+                  $pri += 1e-5,
+                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
+               ];
+            }
+            $cv->end;
+         };
+
+#         my (undef, undef, undef, undef, @ipv4) = gethostbyname $nodename;
+#
+#         for (@ipv4) {
+#            push @res, [
+#               $pri,
+#               AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $_, $t || $DEFAULT_PORT,
+#            ];
+#         }
+      } else {
+         my ($host, $port) = AnyEvent::Socket::parse_hostport $t, "aemp=$DEFAULT_PORT"
+            or Carp::croak "$t: unparsable transport descriptor";
+
+         $cv->begin;
+         AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
+            for (@_) {
+               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
+               push @res, [
+                  $pri += 1e-5,
+                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
+               ];
+            }
+            $cv->end;
+         }
+      }
+   }
+
+   $cv->end;
+
+   $cv
+}
+
+sub initialise_node(@) {
+   my ($noderef, @others) = @_;
+
+   if ($noderef =~ /^slave\/(.*)$/) {
+      $SLAVE = AE::cv;
+      my $name = $1;
+      $name = $NODE unless length $name;
+      $noderef = AE::cv;
+      $noderef->send ("slave/$name");
+
+      @others
+         or Carp::croak "seed nodes must be specified for slave nodes";
+
+   } else {
+      $PUBLIC = 1;
+      $noderef = resolve_node $noderef;
+   }
+
+   @others = map $_->recv, map +(resolve_node $_), @others;
+
+   $NODE = $noderef->recv;
 
    for my $t (split /,/, $NODE) {
       $NODE{$t} = $NODE{""};
@@ -178,7 +306,6 @@ sub become_public {
       my ($host, $port) = AnyEvent::Socket::parse_hostport $t;
 
       $LISTENER{$t} = AnyEvent::MP::Transport::mp_server $host, $port,
-         @args,
          sub {
             my ($tp) = @_;
 
@@ -189,13 +316,35 @@ sub become_public {
       ;
    }
 
-   $PUBLIC = 1;
+   (add_node $_)->connect for @others;
+
+   if ($SLAVE) {
+      $SLAVE->recv;
+      $SLAVE = 1;
+   }
 }
 
 #############################################################################
 # self node code
 
+sub load_func($) {
+   my $func = $_[0];
+
+   unless (defined &$func) {
+      my $pkg = $func;
+      do {
+         $pkg =~ s/::[^:]+$//
+            or return sub { die "unable to resolve $func" };
+         eval "require $pkg";
+      } until defined &$func;
+   }
+
+   \&$func
+}
+
 our %node_req = (
+   # internal services
+
    # monitoring
    mon0 => sub { # disable monitoring
       my $portid = shift;
@@ -215,18 +364,28 @@ our %node_req = (
 
       $_->(@_) for @$cbs;
    },
+   # node changed its name (for slave nodes)
+   iam => sub {
+      $SRCNODE->{noderef} = $_[0];
+      $NODE{$_[0]} = $SRCNODE;
+   },
+
+   # public services
 
    # well-known-port lookup
    lookup => sub {
       my $name = shift;
       my $port = $REG{$name};
-      #TODO: check vailidity
+      #TODO: check validity
       snd @_, $port;
    },
 
    # relay message to another node / generic echo
    relay => sub {
       &snd;
+   },
+   relay_multiple => sub {
+      snd @$_ for @_
    },
 
    # random garbage
@@ -243,7 +402,11 @@ our %node_req = (
 );
 
 $NODE{""} = $NODE{$NODE} = new AnyEvent::MP::Node::Self noderef => $NODE;
-$PORT{""} = sub { &{ $node_req{+shift} or return } };
+$PORT{""} = sub {
+   my $tag = shift;
+   eval { &{ $node_req{$tag} ||= load_func $tag } };
+   $WARN->("error processing node message: $@") if $@;
+};
 
 =back
 

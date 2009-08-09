@@ -22,79 +22,6 @@ use AnyEvent::MP::Transport ();
 
 use base Exporter::;
 
-our $VERSION = '0.0';
-
-our $DEFAULT_PORT = "4040";
-
-sub normalise_noderef($) {
-   my ($noderef) = @_;
-
-   my $cv = AE::cv;
-   my @res;
-
-   $cv->begin (sub {
-      my %seen;
-      my @refs;
-      for (sort { $a->[0] <=> $b->[0] } @res) {
-         push @refs, $_->[1] unless $seen{$_->[1]}++
-      }
-      shift->send (join ",", @refs);
-   });
-
-   $noderef = $DEFAULT_PORT unless length $noderef;
-
-   my $idx;
-   for my $t (split /,/, $noderef) {
-      my $pri = ++$idx;
-      
-      #TODO: this should be outside normalise_noderef and in become_public
-      if ($t =~ /^\d*$/) {
-         require POSIX;
-         my $nodename = (POSIX::uname ())[1];
-
-         $cv->begin;
-         AnyEvent::Socket::resolve_sockaddr $nodename, $t || "aemp=$DEFAULT_PORT", "tcp", 0, undef, sub {
-            for (@_) {
-               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
-               push @res, [
-                  $pri += 1e-5,
-                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
-               ];
-            }
-            $cv->end;
-         };
-
-#         my (undef, undef, undef, undef, @ipv4) = gethostbyname $nodename;
-#
-#         for (@ipv4) {
-#            push @res, [
-#               $pri,
-#               AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $_, $t || $DEFAULT_PORT,
-#            ];
-#         }
-      } else {
-         my ($host, $port) = AnyEvent::Socket::parse_hostport $t, "aemp=$DEFAULT_PORT"
-            or Carp::croak "$t: unparsable transport descriptor";
-
-         $cv->begin;
-         AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
-            for (@_) {
-               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
-               push @res, [
-                  $pri += 1e-5,
-                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
-               ];
-            }
-            $cv->end;
-         }
-      }
-   }
-
-   $cv->end;
-
-   $cv
-}
-
 sub new {
    my ($class, $noderef) = @_;
 
@@ -127,9 +54,6 @@ sub kill {
 sub monitor {
    my ($self, $portid, $cb) = @_;
 
-   return $cb->("node failed conenction")
-      if $self->{failed};
-
    my $list = $self->{lmon}{$portid} ||= [];
 
    $self->send (["", mon1 => $portid])
@@ -158,20 +82,11 @@ sub set_transport {
    $self->clr_transport
       if $self->{transport};
 
-   if (
-      exists $self->{remote_uniq}
-      && $self->{remote_uniq} ne $transport->{remote_uniq}
-   ) {
-      # uniq changed, different node
-      $self->fail ("node restart detected");
-   }
-
    delete $self->{trial};
+   delete $self->{retry};
    delete $self->{next_connect};
-   delete $self->{failed};
 
-   $self->{remote_uniq} = $transport->{remote_uniq};
-   $self->{transport}   = $transport;
+   $self->{transport} = $transport;
 
    $transport->send ($_)
       for @{ delete $self->{queue} || [] };
@@ -181,8 +96,6 @@ sub fail {
    my ($self, @reason) = @_;
 
    delete $self->{queue};
-
-   $self->{failed} = 1;
 
    if (my $mon = delete $self->{lmon}) {
       $_->(@reason) for map @$_, values %$mon;
@@ -201,31 +114,14 @@ sub connect {
 
    Scalar::Util::weaken $self;
 
-   unless (exists $self->{n_noderef}) {
-      return if $self->{n_noderef_}++;
-      (AnyEvent::MP::Node::normalise_noderef ($self->{noderef}))->cb (sub {
-         $self or return;
-         delete $self->{n_noderef_};
-         my $noderef = shift->recv;
-
-         $self->{n_noderef} = $noderef;
-
-         $AnyEvent::MP::Base::NODE{$_} = $self
-            for split /,/, $noderef;
-
-         $self->connect;
-      });
-      return;
-   }
-
-   $self->{retry} ||= [split /,/, $self->{n_noderef}];
+   $self->{retry} ||= [split /,/, $self->{noderef}];
 
    my $endpoint = shift @{ $self->{retry} };
 
    if (defined $endpoint) {
       $self->{trial}{$endpoint} ||= do {
          my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
-            or return;
+            or return $AnyEvent::MP::Base::WARN->("$self->{noderef}: not a resolved node reference.");
 
          my ($w, $g);
 
@@ -244,12 +140,23 @@ sub connect {
          [$w, \$g]
       };
    } else {
-      delete $self->{retry};
+      $self->fail (transport_error => $self->{noderef}, "unable to connect");
    }
 
    $self->{next_connect} = AE::timer $AnyEvent::MP::Base::CONNECT_INTERVAL, 0, sub {
+      delete $self->{retry};
       $self->connect;
    };
+}
+
+package AnyEvent::MP::Node::Slave;
+
+use base "AnyEvent::MP::Node::Direct";
+
+sub connect {
+   my ($self) = @_;
+
+   $self->fail (transport_error => $self->{noderef}, "unable to connect to slave node");
 }
 
 package AnyEvent::MP::Node::Self;
@@ -257,7 +164,7 @@ package AnyEvent::MP::Node::Self;
 use base "AnyEvent::MP::Node";
 
 sub set_transport {
-   die "FATAL error, set_transport was called";
+   Carp::confess "FATAL error, set_transport was called on local node";
 }
 
 sub send {
@@ -281,7 +188,7 @@ sub kill {
 sub monitor {
    my ($self, $portid, $cb) = @_;
 
-   return $cb->()
+   return $cb->(no_such_port => "cannot monitor nonexistent port")
       unless exists $AnyEvent::MP::Base::PORT{$portid};
 
    $AnyEvent::MP::Base::LMON{$portid}{$cb+0} = $cb;

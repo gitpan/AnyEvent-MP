@@ -1,9 +1,20 @@
 Revision history for AnyEvent::MP
 
-TODO: tls as auth-method?
+TODO: reconnecting successfull will still drop the queue and invoke monitoring.
+TODO: vastly improve reconnecting interval
+
+0.4  Sun Aug  9 18:05:49 CEST 2009
+	- API should now be really stable :)
+	- distinguish between resolved and unresolved noderefs.
+	- certificates in .aemp-secret are now supported.
+        - change port creation semantics.
+        - replace become_xxx by initialise_node.
+        - implement AE::MP::spawn.
+        - implement transport timeouts, monitoring, reconnecting.
+        - simplify and partially document the transport protocol.
 
 0.1  Tue Aug  4 23:07:11 CEST 2009
-	- AnyEvent::MP API should be ostly stable by now.
+	- AnyEvent::MP API should be mostly stable by now.
 
 0.02 Sun Aug  2 17:46:43 CEST 2009
 	- design has stabilised a bit, sitll unusable.

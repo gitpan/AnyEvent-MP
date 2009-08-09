@@ -24,18 +24,21 @@ package AnyEvent::MP::Transport;
 
 use common::sense;
 
-use Scalar::Util;
+use Scalar::Util ();
+use List::Util ();
 use MIME::Base64 ();
 use Storable ();
 use JSON::XS ();
 
+use Digest::MD6 ();
+use Digest::HMAC_MD6 ();
+
 use AE ();
 use AnyEvent::Socket ();
-use AnyEvent::Handle ();
+use AnyEvent::Handle 4.92 ();
 
 use base Exporter::;
 
-our $VERSION = '0.0';
 our $PROTOCOL_VERSION = 0;
 
 =item $listener = mp_listener $host, $port, <constructor-args>, $cb->($transport)
@@ -111,6 +114,8 @@ sub mp_connect {
 
 =cut
 
+sub LATENCY() { 3 } # assumed max. network latency
+
 our @FRAMINGS = qw(json storable); # the framing types we accept and send, in order of preference
 our @AUTH_SND = qw(hmac_md6_64_256); # auth types we send
 our @AUTH_RCV = (@AUTH_SND, qw(cleartext)); # auth types we accept
@@ -128,18 +133,29 @@ sub new {
    {
       Scalar::Util::weaken (my $self = $self);
 
-      $arg{tls_ctx_disabled} ||= {
-         sslv2  => 0,
-         sslv3  => 0,
-         tlsv1  => 1,
-         verify => 1,
-         cert_file => "secret.pem",
-         ca_file   => "secret.pem",
-         verify_require_client_cert => 1,
-      };
-
       $arg{secret} = AnyEvent::MP::Base::default_secret ()
          unless exists $arg{secret};
+
+      $arg{timeout} = 30
+         unless exists $arg{timeout};
+
+      $arg{timeout} = 1 + LATENCY
+         if $arg{timeout} < 1 + LATENCY;
+
+      my $secret = $arg{secret};
+
+      if ($secret =~ /-----BEGIN RSA PRIVATE KEY-----.*-----END RSA PRIVATE KEY-----.*-----BEGIN CERTIFICATE-----.*-----END CERTIFICATE-----/s) {
+         # assume TLS mode
+         $arg{tls_ctx} = {
+            sslv2   => 0,
+            sslv3   => 0,
+            tlsv1   => 1,
+            verify  => 1,
+            cert    => $secret,
+            ca_cert => $secret,
+            verify_require_client_cert => 1,
+         };
+      }
 
       $self->{hdl} = new AnyEvent::Handle
          fh       => delete $arg{fh},
@@ -148,20 +164,22 @@ sub new {
          on_error => sub {
             $self->error ($_[2]);
          },
+         rtimeout => $AnyEvent::MP::Base::CONNECT_TIMEOUT,
          peername => delete $arg{peername},
       ;
 
-      my $secret = $arg{secret};
       my $greeting_kv = $self->{greeting} ||= {};
-      $greeting_kv->{"tls"} = "1.0"
-         if $arg{tls_ctx};
-      $greeting_kv->{provider} = "AE-$VERSION";
+
+      $self->{local_node} = $AnyEvent::MP::Base::NODE;
+
+      $greeting_kv->{"tls"}    = "1.0" if $arg{tls_ctx};
+      $greeting_kv->{provider} = "AE-$AnyEvent::MP::Base::VERSION";
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
+      $greeting_kv->{timeout}  = $arg{timeout};
 
       # send greeting
       my $lgreeting1 = "aemp;$PROTOCOL_VERSION"
-                     . ";$AnyEvent::MP::Base::UNIQ"
-                     . ";$AnyEvent::MP::Base::NODE"
+                     . ";$self->{local_node}"
                      . ";" . (join ",", @AUTH_RCV)
                      . ";" . (join ",", @FRAMINGS)
                      . (join "", map ";$_=$greeting_kv->{$_}", keys %$greeting_kv);
@@ -175,7 +193,7 @@ sub new {
       $self->{hdl}->push_read (line => sub {
          my $rgreeting1 = $_[1];
 
-         my ($aemp, $version, $uniq, $rnode, $auths, $framings, @kv) = split /;/, $rgreeting1;
+         my ($aemp, $version, $rnode, $auths, $framings, @kv) = split /;/, $rgreeting1;
 
          if ($aemp ne "aemp") {
             return $self->error ("unparsable greeting");
@@ -207,7 +225,6 @@ sub new {
          defined $s_framing
             or return $self->error ("$framings: no common framing method supported");
 
-         $self->{remote_uniq} = $uniq;
          $self->{remote_node} = $rnode;
 
          $self->{remote_greeting} = {
@@ -219,33 +236,35 @@ sub new {
          $self->{hdl}->push_read (line => sub {
             my $rgreeting2 = $_[1];
 
+            "$lgreeting1\012$lgreeting2" ne "$rgreeting1\012$rgreeting2" # echo attack?
+               or return $self->error ("authentication error, echo attack?");
+
+            my $key = Digest::MD6::md6 $secret;
+            my $lauth;
+
             if ($self->{tls_ctx} and 1 == int $self->{remote_greeting}{tls}) {
                $self->{tls} = $lgreeting2 lt $rgreeting2 ? "connect" : "accept";
                $self->{hdl}->starttls ($self->{tls}, $self->{tls_ctx});
+               $s_auth = "tls";
+               $lauth = "";
+            } else {
+               # we currently only support hmac_md6_64_256
+               $lauth = Digest::HMAC_MD6::hmac_md6_hex $key, "$lgreeting1\012$lgreeting2\012$rgreeting1\012$rgreeting2\012", 64, 256;
             }
-         
-            # auth
-            require Digest::MD6;
-            require Digest::HMAC_MD6;
-
-            my $key   = Digest::MD6::md6 ($secret);
-            my $lauth = Digest::HMAC_MD6::hmac_md6_hex ($key, "$lgreeting1\012$lgreeting2\012$rgreeting1\012$rgreeting2\012", 64, 256);
-
-            my $rauth =
-               $s_auth eq "hmac_md6_64_256" ? Digest::HMAC_MD6::hmac_md6_hex ($key, "$rgreeting1\012$rgreeting2\012$lgreeting1\012$lgreeting2\012", 64, 256)
-             : $s_auth eq "cleartext"       ? unpack "H*", $secret
-             : die;
-
-            $lauth ne $rauth # echo attack?
-               or return $self->error ("authentication error");
 
             $self->{hdl}->push_write ("$s_auth;$lauth;$s_framing\012");
 
-            # reasd the authentication response
+            # read the authentication response
             $self->{hdl}->push_read (line => sub {
                my ($hdl, $rline) = @_;
 
                my ($auth_method, $rauth2, $r_framing) = split /;/, $rline;
+
+               my $rauth =
+                  $auth_method eq "hmac_md6_64_256" ? Digest::HMAC_MD6::hmac_md6_hex $key, "$rgreeting1\012$rgreeting2\012$lgreeting1\012$lgreeting2\012", 64, 256
+                : $auth_method eq "cleartext"       ? unpack "H*", $secret
+                : $auth_method eq "tls"             ? ($self->{tls} ? "" : "\012\012") # \012\012 never matches
+                : return $self->error ("$auth_method: fatal, selected unsupported auth method");
 
                if ($rauth2 ne $rauth) {
                   return $self->error ("authentication failure/shared secret mismatch");
@@ -256,14 +275,20 @@ sub new {
                $hdl->rbuf_max (undef);
                my $queue = delete $self->{queue}; # we are connected
 
+               $self->{hdl}->rtimeout ($self->{remote_greeting}{timeout});
+               $self->{hdl}->wtimeout ($arg{timeout} - LATENCY);
+               $self->{hdl}->on_wtimeout (sub { $self->send (["", "devnull"]) });
+
                $self->connected;
 
-               my $src_node = $self->{node};
-
-               $hdl->push_write ($self->{s_framing} => $_)
+               # send queued messages
+               $self->send ($_)
                   for @$queue;
 
-               my $rmsg; $rmsg = sub  {
+               # receive handling
+               my $src_node = $self->{node};
+
+               my $rmsg; $rmsg = sub {
                   $_[0]->push_read ($r_framing => $rmsg);
 
                   local $AnyEvent::MP::Base::SRCNODE = $src_node;
@@ -282,7 +307,8 @@ sub error {
    my ($self, $msg) = @_;
 
    if ($self->{node} && $self->{node}{transport} == $self) {
-      $self->{node}->fail (transport_error => $msg);
+      #TODO: store error, but do not instantly fail
+      $self->{node}->fail (transport_error => $self->{node}{noderef}, $msg);
       $self->{node}->clr_transport;
    }
    $AnyEvent::MP::Base::WARN->("$self->{peerhost}:$self->{peerport}: $msg");
@@ -291,6 +317,20 @@ sub error {
 
 sub connected {
    my ($self) = @_;
+
+   if (ref $AnyEvent::MP::Base::SLAVE) {
+      # first connect with a master node
+      my $via = $self->{remote_node};
+      $via =~ s/,/!/g;
+      $AnyEvent::MP::Base::NODE .= "\@$via";
+      $AnyEvent::MP::Base::NODE{$AnyEvent::MP::Base::NODE} = $AnyEvent::MP::Base::NODE{""};
+      $AnyEvent::MP::Base::SLAVE->();
+   }
+
+   if ($self->{local_node} ne $AnyEvent::MP::Base::NODE) {
+      # node changed its name since first greeting
+      $self->send (["", iam => $AnyEvent::MP::Base::NODE]);
+   }
 
    my $node = AnyEvent::MP::Base::add_node ($self->{remote_node});
    Scalar::Util::weaken ($self->{node} = $node);
@@ -358,16 +398,11 @@ The protocol version supported by this end, currently C<0>. If the
 versions don't match then no communication is possible. Minor extensions
 are supposed to be handled through additional key-value pairs.
 
-=item a token uniquely identifying the current node instance
-
-This is a string that must change between restarts. It usually contains
-things like the current time, the (OS) process id or similar values, but
-no meaning of the contents are assumed.
-
 =item the node endpoint descriptors
 
 for public nodes, this is a comma-separated list of protocol endpoints,
-i.e., the noderef. For slave nodes, this is a unique identifier.
+i.e., the noderef. For slave nodes, this is a unique identifier of the
+form C<slave/nonce>.
 
 =item the acceptable authentication methods
 
@@ -406,6 +441,13 @@ as noderef endpoints.
 Indicates that the other side supports TLS (version should be 1.0) and
 wishes to do a TLS handshake.
 
+=item timeout=<seconds>
+
+The amount of time after which this node should be detected as dead unless
+some data has been received. The node is responsible to send traffic
+reasonably more often than this interval (such as every timeout minus five
+seconds).
+
 =back
 
 =head3 Second Greeting Line
@@ -426,7 +468,7 @@ Example of a nonce line:
 =head2 TLS handshake
 
 I<< If, after the handshake, both sides indicate interest in TLS, then the
-connection B<must> use TLS, or fail.>>
+connection B<must> use TLS, or fail. >>
 
 Both sides compare their nonces, and the side who sent the lower nonce
 value ("string" comparison on the raw octet values) becomes the client,
@@ -480,6 +522,14 @@ and remote greeting lines swapped:
    rauth = HMAC_MD6 key, "rgreeting1\012rgreeting2\012lgreeting1\012lgreeting2\012"
 
 This is the token that is expected from the other side.
+
+=item tls
+
+This type is only valid iff TLS was enabled and the TLS handshake
+was successful. It has no authentication data, as the server/client
+certificate was successfully verified.
+
+Implementations supporting TLS I<must> accept this authentication type.
 
 =back
 

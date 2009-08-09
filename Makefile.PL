@@ -9,9 +9,9 @@ my $mm = MM->new({
        SUFFIX	=> '.gz',
 	            },
     NAME         => "AnyEvent::MP",
-    VERSION_FROM => "MP.pm",
+    VERSION_FROM => "MP/Base.pm",
     PREREQ_PM    => {
-       AnyEvent         => 4.9,
+       AnyEvent         => 4.92,
        Digest::MD6      => 0,
        Digest::HMAC_MD6 => 0,
        MIME::Base64     => 3,
