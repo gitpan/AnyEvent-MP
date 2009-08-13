@@ -31,24 +31,26 @@ are installed. But how to do that is out of scope of this tutorial.
 
 Then we have to setup a I<shared secret>. For two L<AnyEvent::MP> nodes to
 be able to communicate with each other and authenticate each other it is
-necessary to setup the same I<shared secret> for both of them. For testing
-you can write a random string into the file C<.aemp-secret> in your home
-directory:
+necessary to setup the same I<shared secret> for both of them.
 
-   mcookie > ~/.aemp-secret
+The easiest way is to use the F<aemp> utility:
 
-   # or something more predictable
-   echo "secret123#4blabla_please_pick_your_own" > ~/.aemp-secret
+   aemp gensecret
 
-Connections will only be successful when the nodes that want to connect
-to each other have the same I<shared secret>. For more security, you can
-put a self-signed SSL/TLS key/certificate pair into the file (or a normal
-key/certificate and it's CA certificate).
+This creates the F<$HOME/.perl-anyevent-mp> config file and generates a
+random shared secret. You can copy this file to any other system and then
+communicate with it. You cna also select your own shared secret (F<aemp
+setsecret>) and for increased security requirements you can even create a
+TLS certificate (F<aemp gencert>).
+
+Connections will only be successful when the nodes that want to connect to
+each other have the same I<shared secret> (or successfully verify the TLS
+certificate).
 
 B<If something does not work as expected, and for example tcpdump shows
 that the connections are closed almost immediatly, you should make sure
-that F<~/.aemp-secret> is the same on all hosts/user accounts that you try
-to connect with each other!>
+that F<~/.perl-anyevent-mp> is the same on all hosts/user accounts that
+you try to connect with each other!>
 
 =head1 The Chat Client
 

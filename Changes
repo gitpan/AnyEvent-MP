@@ -1,7 +1,10 @@
 Revision history for AnyEvent::MP
 
-TODO: reconnecting successfull will still drop the queue and invoke monitoring.
-TODO: vastly improve reconnecting interval
+0.6  Thu Aug 13 03:15:05 CEST 2009
+	- do away with .aemp-secret and use .perl-anyevent-mp as json config
+          file.
+        - introduce bin/aemp to configure nodes.
+        - too many changes to describe
 
 0.4  Sun Aug  9 18:05:49 CEST 2009
 	- API should now be really stable :)

@@ -1,10 +1,10 @@
 =head1 NAME
 
-AnyEvent::MP::Base - basis for AnyEvent::MP and Coro::MP
+AnyEvent::MP::Kernel - the actual message passing kernel
 
 =head1 SYNOPSIS
 
-   # use AnyEvent::MP or Coro::MP instead
+   use AnyEvent::MP::Kernel;
 
 =head1 DESCRIPTION
 
@@ -12,13 +12,16 @@ This module provides most of the basic functionality of AnyEvent::MP,
 exposed through higher level interfaces such as L<AnyEvent::MP> and
 L<Coro::MP>.
 
-=head1 GLOBALS
+This module is mainly of interest when knowledge about connectivity,
+connected nodes etc. are needed.
+
+=head1 GLOBALS AND FUNCTIONS
 
 =over 4
 
 =cut
 
-package AnyEvent::MP::Base;
+package AnyEvent::MP::Kernel;
 
 use common::sense;
 use Carp ();
@@ -31,7 +34,7 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.4';
+our $VERSION = '0.6';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA %REG $UNIQ $RUNIQ $ID add_node load_func
 
@@ -39,13 +42,13 @@ our @EXPORT = qw(
    resolve_node initialise_node
 );
 
-our $DEFAULT_SECRET;
 our $DEFAULT_PORT = "4040";
 
-our $CONNECT_INTERVAL =  5; # new connect every 5s, at least
-our $CONNECT_TIMEOUT  = 30; # includes handshake
+our $CONNECT_INTERVAL =  2; # new connect every 2s, at least
+our $NETWORK_LATENCY  =  3; # activity timeout
+our $MONITOR_TIMEOUT  = 15; # fail monitoring after this time
 
-=item $AnyEvent::MP::Base::WARN
+=item $AnyEvent::MP::Kernel::WARN
 
 This value is called with an error or warning message, when e.g. a connection
 could not be created, authorisation failed and so on.
@@ -96,24 +99,30 @@ sub asciibits($) {
    $data
 }
 
-sub default_secret {
-   unless (defined $DEFAULT_SECRET) {
-      if (open my $fh, "<$ENV{HOME}/.aemp-secret") {
-         sysread $fh, $DEFAULT_SECRET, -s $fh;
-      } else {
-         $DEFAULT_SECRET = nonce 32;
-      }
-   }
-
-   $DEFAULT_SECRET
-}
-
 sub gen_uniq {
    asciibits pack "wNa*", $$, time, nonce 2
 }
 
+=item $AnyEvent::MP::Kernel::PUBLIC
+
+A boolean indicating whether this is a full/public node, which can create
+and accept direct connections form othe rnodes.
+
+=item $AnyEvent::MP::Kernel::SLAVE
+
+A boolean indicating whether this node is a slave node, i.e. does most of it's
+message sending/receiving through some master node.
+
+=item $AnyEvent::MP::Kernel::MASTER
+
+Defined only in slave mode, in which cas eit contains the noderef of the
+master node.
+
+=cut
+
 our $PUBLIC = 0;
 our $SLAVE  = 0;
+our $MASTER; # master noderef when $SLAVE
 
 our $NODE   = asciibits nonce 16;
 our $RUNIQ  = $NODE; # remote uniq value
@@ -125,8 +134,6 @@ our (%PORT, %PORT_DATA); # local ports
 
 our %RMON; # local ports monitored by remote nodes ($RMON{noderef}{portid} == cb)
 our %LMON; # monitored _local_ ports
-
-our %REG;  # registered port names
 
 our %LISTENER;
 
@@ -167,7 +174,7 @@ sub add_node {
    my $node;
 
    if ($noderef =~ /^slave\/.+$/) {
-      $node = new AnyEvent::MP::Node::Slave $noderef;
+      $node = new AnyEvent::MP::Node::Indirect $noderef;
 
    } else {
       for (split /,/, $noderef) {
@@ -197,7 +204,7 @@ sub snd(@) {
    warn "SND $noderef <- $portid @_\n" if TRACE;#d#
 
    ($NODE{$noderef} || add_node $noderef)
-      ->send (["$portid", @_]);
+      ->{send} (["$portid", @_]);
 }
 
 sub kil(@) {
@@ -281,6 +288,9 @@ sub resolve_node($) {
 sub initialise_node(@) {
    my ($noderef, @others) = @_;
 
+   @others = @{ $AnyEvent::MP::Config::CFG{seeds} }
+      unless @others;
+
    if ($noderef =~ /^slave\/(.*)$/) {
       $SLAVE = AE::cv;
       my $name = $1;
@@ -319,8 +329,86 @@ sub initialise_node(@) {
    (add_node $_)->connect for @others;
 
    if ($SLAVE) {
-      $SLAVE->recv;
+      my $timeout = AE::timer $MONITOR_TIMEOUT, 0, sub { $SLAVE->() };
+      $MASTER = $SLAVE->recv;
+      defined $MASTER
+         or Carp::croak "AnyEvent::MP: unable to enter slave mode, unable to connect to a seednode.\n";
+
+      (my $via = $MASTER) =~ s/,/!/g; 
+
+      $NODE .= "\@$via";
+      $NODE{$NODE} = $NODE{""};
+
+      $_->send (["", iam => $NODE])
+         for values %NODE;
+
       $SLAVE = 1;
+   }
+}
+
+#############################################################################
+# node moniotirng and info
+
+sub _uniq_nodes {
+   my %node;
+
+   @node{values %NODE} = values %NODE;
+
+   values %node;
+}
+
+=item known_nodes
+
+Returns the noderefs of all nodes connected to this node.
+
+=cut
+
+sub known_nodes {
+   map $_->{noderef}, _uniq_nodes
+}
+
+=item up_nodes
+
+Return the noderefs of all nodes that are currently connected (excluding
+the node itself).
+
+=cut
+
+sub up_nodes {
+   map $_->{noderef}, grep $_->{transport}, _uniq_nodes
+}
+
+=item $guard = mon_nodes $callback->($noderef, $is_up, @reason)
+
+Registers a callback that is called each time a node goes up (connection
+is established) or down (connection is lost).
+
+Node up messages can only be followed by node down messages for the same
+node, and vice versa.
+
+The fucntino returns an optional guard which can be used to de-register
+the monitoring callback again.
+
+=cut
+
+our %MON_NODES;
+
+sub mon_nodes($) {
+   my ($cb) = @_;
+
+   $MON_NODES{$cb+0} = $cb;
+
+   wantarray && AnyEvent::Util::guard { delete $MON_NODES{$cb+0} }
+}
+
+sub _inject_nodeevent($$;@) {
+   my ($node, @args) = @_;
+
+   unshift @args, $node->{noderef};
+
+   for my $cb (values %MON_NODES) {
+      eval { $cb->(@args); 1 }
+         or $WARN->($@);
    }
 }
 
@@ -334,7 +422,7 @@ sub load_func($) {
       my $pkg = $func;
       do {
          $pkg =~ s/::[^:]+$//
-            or return sub { die "unable to resolve $func" };
+            or return sub { die "unable to resolve '$func'" };
          eval "require $pkg";
       } until defined &$func;
    }
@@ -372,20 +460,23 @@ our %node_req = (
 
    # public services
 
-   # well-known-port lookup
-   lookup => sub {
-      my $name = shift;
-      my $port = $REG{$name};
-      #TODO: check validity
-      snd @_, $port;
-   },
-
    # relay message to another node / generic echo
    relay => sub {
       &snd;
    },
    relay_multiple => sub {
       snd @$_ for @_
+   },
+
+   # informational
+   info => sub {
+      snd @_, $NODE;
+   },
+   known_nodes => sub {
+      snd @_, known_nodes;
+   },
+   up_nodes => sub {
+      snd @_, up_nodes;
    },
 
    # random garbage

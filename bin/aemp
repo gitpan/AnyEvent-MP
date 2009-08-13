@@ -1,0 +1,186 @@
+#!/opt/bin/perl
+
+=head1 NAME
+
+   aemp - AnyEvent:MP utility
+
+=head1 SYNOPSIS
+
+   aemp command args...
+
+   # protocol commands
+   aemp snd <port> <arg...>    # send a message
+   aemp mon <port>             # wait till port is killed
+   aemp rpc <port> <arg...>    # send message, append reply
+
+   # node configuration: secret
+   aemp gensecret              # generate a random shared secret
+   aemp setsecret <secret>     # set the shared secret
+   aemp clrsecret              # remove the secret
+
+   # node configuration: TLS
+   aemp setcert <file>         # set a certificate (key.pem + certificate.pem)
+   aemp clrcert                # remove certificate
+   aemp gencert                # generate a random certificate
+
+   # node configuration
+   aemp setseeds noderef...    # set seednodes
+   aemp addseed noderef        # add a seednode
+   aemp delseed noderef        # remove seednode
+
+=head1 DESCRIPTION
+
+With aemp you can configure various aspects of AnyEvent::MP and it's protocol.
+
+=cut
+
+use common::sense;
+
+use Carp ();
+
+use AnyEvent;
+use AnyEvent::Util;
+
+use AnyEvent::MP::Config;
+use AnyEvent::MP;
+
+sub my_run_cmd {
+   my ($cmd) = @_;
+
+   my $cv = &run_cmd;
+   my $status = $cv->recv;
+
+   $status
+      and die "@$cmd: command failed with exit status $status.";
+}
+
+sub gen_cert {
+   my_run_cmd [qw(openssl req 
+                     -new -nodes -x509 -days 3650
+                     -newkey rsa:2048 -keyout /dev/fd/3
+                     -batch -subj /CN=AnyEvent::MP
+              )],
+      "<", "/dev/null",
+      ">" , \my $cert,
+      "3>", \my $key,
+      "2>", "/dev/null";
+
+   "$cert$key"
+}
+
+our $cfg     = \%AnyEvent::MP::Config::CFG;
+our $nodecfg = $cfg;
+
+sub resolve_port {
+   my ($node, $port) = split /#/, $_[0], 2;
+
+   $node = (resolve_node $node)->recv;
+   "$node#$port"
+}
+
+our %CMD = (
+   snd => sub {
+      my $port = resolve_port shift @ARGV;
+      initialise_node "slave/", node_of $port;
+
+      snd $port, @ARGV; @ARGV = ();
+
+      my $cv = AE::cv;
+      my $to = AE::timer 5, 0, sub { $cv->("timeout") };
+      mon $port, $cv;
+      my $reply = port { &$cv; 1 };
+      snd node_of $port, relay => $reply, "ok";
+
+      print join " ", $cv->recv, "\n";
+   },
+
+   rpc => sub {
+      my $port = resolve_port shift @ARGV;
+      initialise_node "slave/", node_of $port;
+
+      my $cv = AE::cv;
+      my $to = AE::timer 5, 0, sub { $cv->("timeout") };
+      my $reply = port { &$cv; 1 };
+      snd $port, @ARGV, $reply; @ARGV = ();
+      mon $port, $cv;
+
+      print join " ", $cv->recv, "\n";
+   },
+
+   mon => sub {
+      my $port = resolve_port shift @ARGV;
+      initialise_node "slave/", node_of $port;
+
+      mon $port, my $cv = AE::cv;
+      print join " ", $cv->recv, "\n";
+   },
+
+   setsecret => sub {
+      @ARGV == 1
+         or die "shared secret missing\n";
+
+      $nodecfg->{secret} = shift @ARGV;
+      ++$cfg->{dirty};
+   },
+   gensecret => sub {
+      $nodecfg->{secret} = AnyEvent::MP::Base::asciibits AnyEvent::MP::Base::nonce 64;
+      ++$cfg->{dirty};
+   },
+   clrsecret => sub {
+      delete $nodecfg->{secret};
+      ++$cfg->{dirty};
+   },
+
+   setcert => sub {
+      @ARGV == 1
+         or die "key+certificate pem filename missing\n";
+
+      open my $fh, "<", $ARGV[0]
+         or die "$ARGV[0]: $!";
+
+      local $/;
+      $nodecfg->{cert} = <$fh>;
+      ++$cfg->{dirty};
+   },
+   gencert => sub {
+      $nodecfg->{cert} = gen_cert;
+      ++$cfg->{dirty};
+   },
+   clrcert => sub {
+      delete $nodecfg->{cert};
+      ++$cfg->{dirty};
+   },
+
+   setseeds => sub {
+      $cfg->{seeds} = [@ARGV];
+      @ARGV = ();
+      ++$cfg->{dirty};
+   },
+   addseed => sub {
+      my $seed = shift @ARGV;
+      @{ $cfg->{seeds} } = grep $_ ne $seed, @{ $cfg->{seeds} };
+      push @{ $cfg->{seeds} }, $seed;
+      ++$cfg->{dirty};
+   },
+   addseed => sub {
+      my $seed = shift @ARGV;
+      @{ $cfg->{seeds} } = grep $_ ne $seed, @{ $cfg->{seeds} };
+      ++$cfg->{dirty};
+   },
+);
+
+sub docmd {
+   my $cmd = shift @ARGV;
+
+   $CMD{$cmd}
+      or die "$cmd: no such aemp command (try man aemp)";
+
+   $CMD{$cmd}();
+}
+
+@ARGV
+   or die "Usage: aemp subcommand ... (try man aemp)\n";
+
+docmd;
+
+

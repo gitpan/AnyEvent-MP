@@ -3,7 +3,9 @@
 use AnyEvent;
 use AnyEvent::MP;
 
-become_public "127.0.0.1:1299";
+initialise_node "127.0.0.1:1299";
+
+print "initialized server\n";
 
 my $chatter_port = port;
 
@@ -17,6 +19,12 @@ rcv $chatter_port,
 
       print "got new client port: $client_port\n";
       $client_ports{$client_port} = 1;
+
+      mon $client_port, sub {
+         my (@reason) = @_;
+         print "client disconnected: " . join (', ', @reason) . "\n";
+         delete $client_ports{$client_port}
+      };
 
       0
    },

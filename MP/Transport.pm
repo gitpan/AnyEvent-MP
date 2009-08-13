@@ -37,7 +37,7 @@ use AE ();
 use AnyEvent::Socket ();
 use AnyEvent::Handle 4.92 ();
 
-use base Exporter::;
+use AnyEvent::MP::Config ();
 
 our $PROTOCOL_VERSION = 0;
 
@@ -73,22 +73,27 @@ sub mp_server($$@) {
 =cut
 
 sub mp_connect {
-   my $cb = pop;
+   my $release = pop;
    my ($host, $port, @args) = @_;
 
-   AnyEvent::Socket::tcp_connect $host, $port, sub {
+   my $state;
+
+   $state = AnyEvent::Socket::tcp_connect $host, $port, sub {
       my ($fh, $nhost, $nport) = @_;
 
-      return $cb->() unless $fh;
+      return $release->() unless $fh;
 
-      $cb->(new AnyEvent::MP::Transport
+      $state = new AnyEvent::MP::Transport
          fh       => $fh,
          peername => $host,
          peerhost => $nhost,
          peerport => $nport,
+         release  => $release,
          @args,
-      );
-   }
+      ;
+   };
+
+   \$state
 }
 
 =item new AnyEvent::MP::Transport
@@ -102,7 +107,6 @@ sub mp_connect {
       on_error => sub { error-callback },
 
       # optional
-      secret   => "shared secret",
       on_eof   => sub { clean-close-callback },
       on_connect => sub { successful-connect-callback },
       greeting => { key => value },
@@ -133,26 +137,31 @@ sub new {
    {
       Scalar::Util::weaken (my $self = $self);
 
-      $arg{secret} = AnyEvent::MP::Base::default_secret ()
+      my $config = AnyEvent::MP::Config::node_config;
+
+      my $latency = $config->{network_latency} || LATENCY;
+
+      $arg{secret} = $config->{secret}
          unless exists $arg{secret};
 
-      $arg{timeout} = 30
+      $arg{timeout} = $config->{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT
          unless exists $arg{timeout};
 
-      $arg{timeout} = 1 + LATENCY
-         if $arg{timeout} < 1 + LATENCY;
+      $arg{timeout} -= $latency;
+
+      $arg{timeout} = 1 + $latency
+         if $arg{timeout} < 1 + $latency;
 
       my $secret = $arg{secret};
 
-      if ($secret =~ /-----BEGIN RSA PRIVATE KEY-----.*-----END RSA PRIVATE KEY-----.*-----BEGIN CERTIFICATE-----.*-----END CERTIFICATE-----/s) {
-         # assume TLS mode
+      if (exists $config->{cert}) {
          $arg{tls_ctx} = {
             sslv2   => 0,
             sslv3   => 0,
             tlsv1   => 1,
             verify  => 1,
-            cert    => $secret,
-            ca_cert => $secret,
+            cert    => $config->{cert},
+            ca_cert => $config->{cert},
             verify_require_client_cert => 1,
          };
       }
@@ -164,16 +173,16 @@ sub new {
          on_error => sub {
             $self->error ($_[2]);
          },
-         rtimeout => $AnyEvent::MP::Base::CONNECT_TIMEOUT,
+         rtimeout => $latency,
          peername => delete $arg{peername},
       ;
 
       my $greeting_kv = $self->{greeting} ||= {};
 
-      $self->{local_node} = $AnyEvent::MP::Base::NODE;
+      $self->{local_node} = $AnyEvent::MP::Kernel::NODE;
 
       $greeting_kv->{"tls"}    = "1.0" if $arg{tls_ctx};
-      $greeting_kv->{provider} = "AE-$AnyEvent::MP::Base::VERSION";
+      $greeting_kv->{provider} = "AE-$AnyEvent::MP::Kernel::VERSION";
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
       $greeting_kv->{timeout}  = $arg{timeout};
 
@@ -184,7 +193,7 @@ sub new {
                      . ";" . (join ",", @FRAMINGS)
                      . (join "", map ";$_=$greeting_kv->{$_}", keys %$greeting_kv);
 
-      my $lgreeting2 = MIME::Base64::encode_base64 AnyEvent::MP::Base::nonce (33), "";
+      my $lgreeting2 = MIME::Base64::encode_base64 AnyEvent::MP::Kernel::nonce (66), "";
 
       $self->{hdl}->push_write ("$lgreeting1\012$lgreeting2\012");
 
@@ -239,7 +248,7 @@ sub new {
             "$lgreeting1\012$lgreeting2" ne "$rgreeting1\012$rgreeting2" # echo attack?
                or return $self->error ("authentication error, echo attack?");
 
-            my $key = Digest::MD6::md6 $secret;
+            my $key;
             my $lauth;
 
             if ($self->{tls_ctx} and 1 == int $self->{remote_greeting}{tls}) {
@@ -247,9 +256,12 @@ sub new {
                $self->{hdl}->starttls ($self->{tls}, $self->{tls_ctx});
                $s_auth = "tls";
                $lauth = "";
-            } else {
+            } elsif (length $secret) {
+               $key = Digest::MD6::md6 $secret;
                # we currently only support hmac_md6_64_256
                $lauth = Digest::HMAC_MD6::hmac_md6_hex $key, "$lgreeting1\012$lgreeting2\012$rgreeting1\012$rgreeting2\012", 64, 256;
+            } else {
+               return $self->error ("unable to handshake TLS and no shared secret configured");
             }
 
             $self->{hdl}->push_write ("$s_auth;$lauth;$s_framing\012");
@@ -291,8 +303,8 @@ sub new {
                my $rmsg; $rmsg = sub {
                   $_[0]->push_read ($r_framing => $rmsg);
 
-                  local $AnyEvent::MP::Base::SRCNODE = $src_node;
-                  AnyEvent::MP::Base::_inject (@{ $_[1] });
+                  local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+                  AnyEvent::MP::Kernel::_inject (@{ $_[1] });
                };
                $hdl->push_read ($r_framing => $rmsg);
             });
@@ -306,35 +318,29 @@ sub new {
 sub error {
    my ($self, $msg) = @_;
 
-   if ($self->{node} && $self->{node}{transport} == $self) {
-      #TODO: store error, but do not instantly fail
-      $self->{node}->fail (transport_error => $self->{node}{noderef}, $msg);
-      $self->{node}->clr_transport;
-   }
-   $AnyEvent::MP::Base::WARN->("$self->{peerhost}:$self->{peerport}: $msg");
+   $self->{node}->transport_error (transport_error => $self->{node}{noderef}, $msg)
+      if $self->{node} && $self->{node}{transport} == $self;
+
+   (delete $self->{release})->()
+      if exists $self->{release};
+   
+   $AnyEvent::MP::Kernel::WARN->("$self->{peerhost}:$self->{peerport}: $msg");
    $self->destroy;
 }
 
 sub connected {
    my ($self) = @_;
 
-   if (ref $AnyEvent::MP::Base::SLAVE) {
-      # first connect with a master node
-      my $via = $self->{remote_node};
-      $via =~ s/,/!/g;
-      $AnyEvent::MP::Base::NODE .= "\@$via";
-      $AnyEvent::MP::Base::NODE{$AnyEvent::MP::Base::NODE} = $AnyEvent::MP::Base::NODE{""};
-      $AnyEvent::MP::Base::SLAVE->();
-   }
+   (delete $self->{release})->()
+      if exists $self->{release};
 
-   if ($self->{local_node} ne $AnyEvent::MP::Base::NODE) {
-      # node changed its name since first greeting
-      $self->send (["", iam => $AnyEvent::MP::Base::NODE]);
-   }
+   # first connect with a master node
+   $AnyEvent::MP::Kernel::SLAVE->($self->{remote_node})
+      if ref $AnyEvent::MP::Kernel::SLAVE;
 
-   my $node = AnyEvent::MP::Base::add_node ($self->{remote_node});
+   my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
    Scalar::Util::weaken ($self->{node} = $node);
-   $node->set_transport ($self);
+   $node->transport_connect ($self);
 }
 
 sub send {
@@ -570,7 +576,7 @@ transfer only.
 
 =head1 SEE ALSO
 
-L<AnyEvent>.
+L<AnyEvent::MP>.
 
 =head1 AUTHOR
 

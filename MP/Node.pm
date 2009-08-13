@@ -20,28 +20,118 @@ use AnyEvent::Socket ();
 
 use AnyEvent::MP::Transport ();
 
-use base Exporter::;
-
 sub new {
-   my ($class, $noderef) = @_;
+   my ($self, $noderef) = @_;
 
-   bless { noderef => $noderef }, $class
+   $self = bless { noderef => $noderef }, $self;
+
+   $self->transport_reset;
+
+   $self
 }
 
-package AnyEvent::MP::Node::Direct;
+sub send {
+   &{ shift->{send} }
+}
+
+package AnyEvent::MP::Node::External;
 
 use base "AnyEvent::MP::Node";
 
-sub send {
-   my ($self, $msg) = @_;
+# called at init time, mostly sets {send}
+sub transport_reset {
+   my ($self) = @_;
 
-   if ($self->{transport}) {
-      $self->{transport}->send ($msg);
-   } elsif ($self->{queue}) {
-      push @{ $self->{queue} }, $msg;
-   } else {
-      $self->{queue} = [$msg];
+   delete $self->{transport};
+
+   Scalar::Util::weaken $self;
+
+   $self->{send} = sub {
+      push @{$self->{queue}}, shift;
       $self->connect;
+   };
+}
+
+# called only after successful handshake
+sub transport_error {
+   my ($self, @reason) = @_;
+
+   my $no_transport = !$self->{transport};
+
+   delete $self->{connect_w};
+   delete $self->{connect_to};
+
+   delete $self->{queue};
+   $self->transport_reset;
+
+   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 0, @reason)
+      unless $no_transport;
+
+   if (my $mon = delete $self->{lmon}) {
+      $_->(@reason) for map @$_, values %$mon;
+   }
+}
+
+# called after handshake was successful
+sub transport_connect {
+   my ($self, $transport) = @_;
+
+   $self->transport_error (transport_error => "switched connections")
+      if $self->{transport};
+
+   delete $self->{connect_w};
+   delete $self->{connect_to};
+
+   $self->{transport} = $transport;
+
+   my $transport_send = $transport->can ("send");
+
+   $self->{send} = sub {
+      $transport_send->($transport, $_[0]);
+   };
+
+   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 1);
+
+   $transport->send ($_)
+      for @{ delete $self->{queue} || [] };
+}
+
+sub connect {
+   my ($self) = @_;
+
+   Scalar::Util::weaken $self;
+
+   $self->{connect_to} ||= AE::timer
+      $AnyEvent::MP::Config::CFG{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT,
+      0,
+      sub {
+         $self->transport_error (transport_error => $self->{noderef}, "unable to connect");
+      };
+
+   unless ($self->{connect_w}) {
+      my @endpoints;
+      my %trial;
+
+      $self->{connect_w} = AE::timer
+         0,
+         $AnyEvent::MP::Config::CFG{connect_interval} || $AnyEvent::MP::Kernel::CONNECT_INTERVAL,
+         sub {
+            @endpoints = split /,/, $self->{noderef}
+               unless @endpoints;
+
+            my $endpoint = shift @endpoints;
+
+            $trial{$endpoint} ||= do {
+               my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
+                  or return $AnyEvent::MP::Kernel::WARN->("$self->{noderef}: not a resolved node reference.");
+
+               AnyEvent::MP::Transport::mp_connect
+                  $host, $port,
+                  sub { delete $trial{$endpoint} }
+               ;
+            };
+         }
+      ;
    }
 }
 
@@ -76,111 +166,48 @@ sub unmonitor {
    }
 }
 
-sub set_transport {
-   my ($self, $transport) = @_;
+package AnyEvent::MP::Node::Direct;
 
-   $self->clr_transport
-      if $self->{transport};
+use base "AnyEvent::MP::Node::External";
 
-   delete $self->{trial};
-   delete $self->{retry};
-   delete $self->{next_connect};
-
-   $self->{transport} = $transport;
-
-   $transport->send ($_)
-      for @{ delete $self->{queue} || [] };
-}
-
-sub fail {
-   my ($self, @reason) = @_;
-
-   delete $self->{queue};
-
-   if (my $mon = delete $self->{lmon}) {
-      $_->(@reason) for map @$_, values %$mon;
-   }
-}
-
-sub clr_transport {
-   my ($self, @reason) = @_;
-
-   delete $self->{transport};
-   $self->connect;
-}
-
-sub connect {
-   my ($self) = @_;
-
-   Scalar::Util::weaken $self;
-
-   $self->{retry} ||= [split /,/, $self->{noderef}];
-
-   my $endpoint = shift @{ $self->{retry} };
-
-   if (defined $endpoint) {
-      $self->{trial}{$endpoint} ||= do {
-         my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
-            or return $AnyEvent::MP::Base::WARN->("$self->{noderef}: not a resolved node reference.");
-
-         my ($w, $g);
-
-         $w = AE::timer $AnyEvent::MP::Base::CONNECT_TIMEOUT, 0, sub {
-            delete $self->{trial}{$endpoint};
-         };
-         $g = AnyEvent::MP::Transport::mp_connect
-            $host, $port,
-            sub {
-               delete $self->{trial}{$endpoint}
-                  unless @_;
-               $g = shift;
-            };
-         ;
-
-         [$w, \$g]
-      };
-   } else {
-      $self->fail (transport_error => $self->{noderef}, "unable to connect");
-   }
-
-   $self->{next_connect} = AE::timer $AnyEvent::MP::Base::CONNECT_INTERVAL, 0, sub {
-      delete $self->{retry};
-      $self->connect;
-   };
-}
-
-package AnyEvent::MP::Node::Slave;
+package AnyEvent::MP::Node::Indirect;
 
 use base "AnyEvent::MP::Node::Direct";
 
 sub connect {
    my ($self) = @_;
 
-   $self->fail (transport_error => $self->{noderef}, "unable to connect to slave node");
+   $self->transport_error (transport_error => $self->{noderef}, "unable to connect to indirect node");
 }
 
 package AnyEvent::MP::Node::Self;
 
 use base "AnyEvent::MP::Node";
 
-sub set_transport {
-   Carp::confess "FATAL error, set_transport was called on local node";
+sub connect {
+   # we are trivially connected
 }
 
-sub send {
-   local $AnyEvent::MP::Base::SRCNODE = $_[0];
-   AnyEvent::MP::Base::_inject (@{ $_[1] });
+sub transport_reset {
+   my ($self) = @_;
+
+   Scalar::Util::weaken $self;
+
+   $self->{send} = sub {
+      local $AnyEvent::MP::Kernel::SRCNODE = $self;
+      AnyEvent::MP::Kernel::_inject (@{ $_[0] });
+   };
 }
 
 sub kill {
    my ($self, $port, @reason) = @_;
 
-   delete $AnyEvent::MP::Base::PORT{$port};
-   delete $AnyEvent::MP::Base::PORT_DATA{$port};
+   delete $AnyEvent::MP::Kernel::PORT{$port};
+   delete $AnyEvent::MP::Kernel::PORT_DATA{$port};
 
-   my $mon = delete $AnyEvent::MP::Base::LMON{$port}
+   my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}
       or !@reason
-      or $AnyEvent::MP::Base::WARN->("unmonitored local port $port died with reason: @reason");
+      or $AnyEvent::MP::Kernel::WARN->("unmonitored local port $port died with reason: @reason");
 
    $_->(@reason) for values %$mon;
 }
@@ -189,20 +216,20 @@ sub monitor {
    my ($self, $portid, $cb) = @_;
 
    return $cb->(no_such_port => "cannot monitor nonexistent port")
-      unless exists $AnyEvent::MP::Base::PORT{$portid};
+      unless exists $AnyEvent::MP::Kernel::PORT{$portid};
 
-   $AnyEvent::MP::Base::LMON{$portid}{$cb+0} = $cb;
+   $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0} = $cb;
 }
 
 sub unmonitor {
    my ($self, $portid, $cb) = @_;
 
-   delete $AnyEvent::MP::Base::LMON{$portid}{$cb+0};
+   delete $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0};
 }
 
 =head1 SEE ALSO
 
-L<AnyEvent>.
+L<AnyEvent::MP>.
 
 =head1 AUTHOR
 

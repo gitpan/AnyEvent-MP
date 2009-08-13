@@ -6,6 +6,10 @@ use AnyEvent::MP;
 
 my $server_node = "127.0.0.1:1299";
 
+initialise_node "slave/", $server_node;
+
+print "initialized client\n";
+
 my $client_port = port;
 
 snd $server_node, lookup => "chatter", $client_port, "resolved";

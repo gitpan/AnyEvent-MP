@@ -40,6 +40,15 @@ AnyEvent::MP - multi-processing/message-passing framework
    mon $port, $otherport       # kill otherport on abnormal death
    mon $port, $otherport, @msg # send message on death
 
+=head1 CURRENT STATUS
+
+   AnyEvent::MP            - stable API, should work
+   AnyEvent::MP::Intro     - outdated
+   AnyEvent::MP::Kernel    - WIP
+   AnyEvent::MP::Transport - mostly stable
+
+   stay tuned.
+
 =head1 DESCRIPTION
 
 This module (-family) implements a simple message passing framework.
@@ -52,7 +61,7 @@ manual page.
 
 At the moment, this module family is severly broken and underdocumented,
 so do not use. This was uploaded mainly to reserve the CPAN namespace -
-stay tuned! The basic API should be finished, however.
+stay tuned!
 
 =head1 CONCEPTS
 
@@ -107,7 +116,7 @@ resolve it.
 
 package AnyEvent::MP;
 
-use AnyEvent::MP::Base;
+use AnyEvent::MP::Kernel;
 
 use common::sense;
 
@@ -117,7 +126,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = $AnyEvent::MP::Base::VERSION;
+our $VERSION = $AnyEvent::MP::Kernel::VERSION;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of _any_
