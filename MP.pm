@@ -12,6 +12,11 @@ AnyEvent::MP - multi-processing/message-passing framework
 
    $SELF      # receiving/own port id in rcv callbacks
 
+   # initialise the node so it can send/receive messages
+   initialise_node;                  # -OR-
+   initialise_node "localhost:4040"; # -OR-
+   initialise_node "slave/", "localhost:4040"
+
    # ports are message endpoints
 
    # sending messages
@@ -19,21 +24,16 @@ AnyEvent::MP - multi-processing/message-passing framework
    snd $port, @msg;
    snd @msg_with_first_element_being_a_port;
 
-   # miniports
-   my $miniport = port { my @msg = @_; 0 };
+   # creating/using ports, the simple way
+   my $simple_port = port { my @msg = @_; 0 };
 
-   # full ports
+   # creating/using ports, tagged message matching
    my $port = port;
-   rcv $port, smartmatch => $cb->(@msg);
    rcv $port, ping => sub { snd $_[0], "pong"; 0 };
    rcv $port, pong => sub { warn "pong received\n"; 0 };
 
-   # remote ports
+   # create a port on another node
    my $port = spawn $node, $initfunc, @initdata;
-
-   # more, smarter, matches (_any_ is exported by this module)
-   rcv $port, [child_died => $pid] => sub { ...
-   rcv $port, [_any_, _any_, 3] => sub { .. $_[2] is 3
 
    # monitoring
    mon $port, $cb->(@msg)      # callback is invoked on death
@@ -71,22 +71,21 @@ stay tuned!
 
 A port is something you can send messages to (with the C<snd> function).
 
-Some ports allow you to register C<rcv> handlers that can match specific
-messages. All C<rcv> handlers will receive messages they match, messages
-will not be queued.
+Ports allow you to register C<rcv> handlers that can match all or just
+some messages. Messages will not be queued.
 
 =item port id - C<noderef#portname>
 
-A port id is normaly the concatenation of a noderef, a hash-mark (C<#>) as
+A port ID is the concatenation of a noderef, a hash-mark (C<#>) as
 separator, and a port name (a printable string of unspecified format). An
 exception is the the node port, whose ID is identical to its node
 reference.
 
 =item node
 
-A node is a single process containing at least one port - the node
-port. You can send messages to node ports to find existing ports or to
-create new ports, among other things.
+A node is a single process containing at least one port - the node port,
+which provides nodes to manage each other remotely, and to create new
+ports.
 
 Nodes are either private (single-process only), slaves (connected to a
 master node only) or public nodes (connectable from unrelated nodes).
@@ -145,14 +144,13 @@ sub _self_die() {
 
 =item $thisnode = NODE / $NODE
 
-The C<NODE> function returns, and the C<$NODE> variable contains
-the noderef of the local node. The value is initialised by a call
-to C<become_public> or C<become_slave>, after which all local port
-identifiers become invalid.
+The C<NODE> function returns, and the C<$NODE> variable contains the
+noderef of the local node. The value is initialised by a call to
+C<initialise_node>.
 
 =item $noderef = node_of $port
 
-Extracts and returns the noderef from a portid or a noderef.
+Extracts and returns the noderef from a port ID or a noderef.
 
 =item initialise_node $noderef, $seednode, $seednode...
 
@@ -165,7 +163,14 @@ it should know the noderefs of some other nodes in the network.
 This function initialises a node - it must be called exactly once (or
 never) before calling other AnyEvent::MP functions.
 
-All arguments are noderefs, which can be either resolved or unresolved.
+All arguments (optionally except for the first) are noderefs, which can be
+either resolved or unresolved.
+
+The first argument will be looked up in the configuration database first
+(if it is C<undef> then the current nodename will be used instead) to find
+the relevant configuration profile (see L<aemp>). If none is found then
+the default configuration is used. The configuration supplies additional
+seed/master nodes and can override the actual noderef.
 
 There are two types of networked nodes, public nodes and slave nodes:
 
@@ -173,23 +178,26 @@ There are two types of networked nodes, public nodes and slave nodes:
 
 =item public nodes
 
-For public nodes, C<$noderef> must either be a (possibly unresolved)
-noderef, in which case it will be resolved, or C<undef> (or missing), in
-which case the noderef will be guessed.
+For public nodes, C<$noderef> (supplied either directly to
+C<initialise_node> or indirectly via a profile or the nodename) must be a
+noderef (possibly unresolved, in which case it will be resolved).
 
-Afterwards, the node will bind itself on all endpoints and try to connect
-to all additional C<$seednodes> that are specified. Seednodes are optional
-and can be used to quickly bootstrap the node into an existing network.
+After resolving, the node will bind itself on all endpoints and try to
+connect to all additional C<$seednodes> that are specified. Seednodes are
+optional and can be used to quickly bootstrap the node into an existing
+network.
 
 =item slave nodes
 
-When the C<$noderef> is the special string C<slave/>, then the node will
-become a slave node. Slave nodes cannot be contacted from outside and will
-route most of their traffic to the master node that they attach to.
+When the C<$noderef> (either as given or overriden by the config file)
+is the special string C<slave/>, then the node will become a slave
+node. Slave nodes cannot be contacted from outside and will route most of
+their traffic to the master node that they attach to.
 
-At least one additional noderef is required: The node will try to connect
-to all of them and will become a slave attached to the first node it can
-successfully connect to.
+At least one additional noderef is required (either by specifying it
+directly or because it is part of the configuration profile): The node
+will try to connect to all of them and will become a slave attached to the
+first node it can successfully connect to.
 
 =back
 
@@ -197,9 +205,21 @@ This function will block until all nodes have been resolved and, for slave
 nodes, until it has successfully established a connection to a master
 server.
 
-Example: become a public node listening on the default node.
+Example: become a public node listening on the guessed noderef, or the one
+specified via C<aemp> for the current node. This should be the most common
+form of invocation for "daemon"-type nodes.
 
    initialise_node;
+
+Example: become a slave node to any of the the seednodes specified via
+C<aemp>.  This form is often used for commandline clients.
+
+   initialise_node "slave/";
+
+Example: become a slave node to any of the specified master servers. This
+form is also often used for commandline clients.
+
+   initialise_node "slave/", "master1", "192.168.13.17", "mp.example.net";
 
 Example: become a public node, and try to contact some well-known master
 servers to become part of the network.
@@ -212,11 +232,7 @@ Example: become a public node listening on port C<4041>.
 
 Example: become a public node, only visible on localhost port 4044.
 
-   initialise_node "locahost:4044";
-
-Example: become a slave node to any of the specified master servers.
-
-   initialise_node "slave/", "master1", "192.168.13.17", "mp.example.net";
+   initialise_node "localhost:4044";
 
 =item $cv = resolve_node $noderef
 
@@ -263,11 +279,10 @@ module, but only C<$SELF> is currently used.
 =item snd $port, @msg
 
 Send the given message to the given port ID, which can identify either
-a local or a remote port, and can be either a string or soemthignt hat
-stringifies a sa port ID (such as a port object :).
+a local or a remote port, and must be a port ID.
 
 While the message can be about anything, it is highly recommended to use a
-string as first element (a portid, or some word that indicates a request
+string as first element (a port ID, or some word that indicates a request
 type etc.).
 
 The message data effectively becomes read-only after a call to this
@@ -282,105 +297,73 @@ node, anything can be passed.
 
 =item $local_port = port
 
-Create a new local port object that can be used either as a pattern
-matching port ("full port") or a single-callback port ("miniport"),
-depending on how C<rcv> callbacks are bound to the object.
+Create a new local port object and returns its port ID. Initially it has
+no callbacks set and will throw an error when it receives messages.
 
-=item $port = port { my @msg = @_; $finished }
+=item $local_port = port { my @msg = @_ }
 
-Creates a "miniport", that is, a very lightweight port without any pattern
-matching behind it, and returns its ID. Semantically the same as creating
-a port and calling C<rcv $port, $callback> on it.
+Creates a new local port, and returns its ID. Semantically the same as
+creating a port and calling C<rcv $port, $callback> on it.
 
-The block will be called for every message received on the port. When the
-callback returns a true value its job is considered "done" and the port
-will be destroyed. Otherwise it will stay alive.
+The block will be called for every message received on the port, with the
+global variable C<$SELF> set to the port ID. Runtime errors will cause the
+port to be C<kil>ed. The message will be passed as-is, no extra argument
+(i.e. no port ID) will be passed to the callback.
 
-The message will be passed as-is, no extra argument (i.e. no port id) will
-be passed to the callback.
+If you want to stop/destroy the port, simply C<kil> it:
 
-If you need the local port id in the callback, this works nicely:
-
-   my $port; $port = port {
-      snd $otherport, reply => $port;
+   my $port = port {
+      my @msg = @_;
+      ...
+      kil $SELF;
    };
 
 =cut
 
 sub rcv($@);
 
+sub _kilme {
+   die "received message on port without callback";
+}
+
 sub port(;&) {
    my $id = "$UNIQ." . $ID++;
    my $port = "$NODE#$id";
 
-   if (@_) {
-      rcv $port, shift;
-   } else {
-      $PORT{$id} = sub { }; # nop
-   }
+   rcv $port, shift || \&_kilme;
 
    $port
 }
 
-=item reg $port, $name
+=item rcv $local_port, $callback->(@msg)
 
-=item reg $name
-
-Registers the given port (or C<$SELF><<< if missing) under the name
-C<$name>. If the name already exists it is replaced.
-
-A port can only be registered under one well known name.
-
-A port automatically becomes unregistered when it is killed.
-
-=cut
-
-sub reg(@) {
-   my $port = @_ > 1 ? shift : $SELF || Carp::croak 'reg: called with one argument only, but $SELF not set,';
-
-   $REG{$_[0]} = $port;
-}
-
-=item rcv $port, $callback->(@msg)
-
-Replaces the callback on the specified miniport (after converting it to
-one if required).
-
-=item rcv $port, tagstring        => $callback->(@msg), ...
-
-=item rcv $port, $smartmatch      => $callback->(@msg), ...
-
-=item rcv $port, [$smartmatch...] => $callback->(@msg), ...
-
-Register callbacks to be called on matching messages on the given full
-port (after converting it to one if required) and return the port.
-
-The callback has to return a true value when its work is done, after
-which is will be removed, or a false value in which case it will stay
-registered.
+Replaces the default callback on the specified port. There is no way to
+remove the default callback: use C<sub { }> to disable it, or better
+C<kil> the port when it is no longer needed.
 
 The global C<$SELF> (exported by this module) contains C<$port> while
-executing the callback.
+executing the callback. Runtime errors during callback execution will
+result in the port being C<kil>ed.
 
-Runtime errors during callback execution will result in the port being
-C<kil>ed.
+The default callback received all messages not matched by a more specific
+C<tag> match.
 
-If the match is an array reference, then it will be matched against the
-first elements of the message, otherwise only the first element is being
-matched.
+=item rcv $local_port, tag => $callback->(@msg_without_tag), ...
 
-Any element in the match that is specified as C<_any_> (a function
-exported by this module) matches any single element of the message.
+Register (or replace) callbacks to be called on messages starting with the
+given tag on the given port (and return the port), or unregister it (when
+C<$callback> is C<$undef> or missing). There can only be one callback
+registered for each tag.
 
-While not required, it is highly recommended that the first matching
-element is a string identifying the message. The one-string-only match is
-also the most efficient match (by far).
+The original message will be passed to the callback, after the first
+element (the tag) has been removed. The callback will use the same
+environment as the default callback (see above).
 
 Example: create a port and bind receivers on it in one go.
 
   my $port = rcv port,
-     msg1 => sub { ...; 0 },
-     msg2 => sub { ...; 0 },
+     msg1 => sub { ... },
+     msg2 => sub { ... },
   ;
 
 Example: create a port, bind receivers and send it in a message elsewhere
@@ -388,9 +371,18 @@ in one go:
 
    snd $otherport, reply =>
       rcv port,
-         msg1 => sub { ...; 0 },
+         msg1 => sub { ... },
          ...
    ;
+
+Example: temporarily register a rcv callback for a tag matching some port
+(e.g. for a rpc reply) and unregister it after a message was received.
+
+   rcv $port, $otherport => sub {
+      my @reply = @_;
+
+      rcv $SELF, $otherport;
+   };
 
 =cut
 
@@ -401,65 +393,47 @@ sub rcv($@) {
    ($NODE{$noderef} || add_node $noderef) == $NODE{""}
       or Carp::croak "$port: rcv can only be called on local ports, caught";
 
-   if (@_ == 1) {
-      my $cb = shift;
-      delete $PORT_DATA{$portid};
-      $PORT{$portid} = sub {
-         local $SELF = $port;
-         eval {
-            &$cb
-               and kil $port;
-         };
-         _self_die if $@;
-      };
-   } else {
-      my $self = $PORT_DATA{$portid} ||= do {
-         my $self = bless {
-            id    => $port,
-         }, "AnyEvent::MP::Port";
+   while (@_) {
+      if (ref $_[0]) {
+         if (my $self = $PORT_DATA{$portid}) {
+            "AnyEvent::MP::Port" eq ref $self
+               or Carp::croak "$port: rcv can only be called on message matching ports, caught";
 
-         $PORT{$portid} = sub {
-            local $SELF = $port;
+            $self->[2] = shift;
+         } else {
+            my $cb = shift;
+            $PORT{$portid} = sub {
+               local $SELF = $port;
+               eval { &$cb }; _self_die if $@;
+            };
+         }
+      } elsif (defined $_[0]) {
+         my $self = $PORT_DATA{$portid} ||= do {
+            my $self = bless [$PORT{$port} || sub { }, { }, $port], "AnyEvent::MP::Port";
 
-            eval {
-               for (@{ $self->{rc0}{$_[0]} }) {
-                  $_ && &{$_->[0]}
-                     && undef $_;
-               }
+            $PORT{$portid} = sub {
+               local $SELF = $port;
 
-               for (@{ $self->{rcv}{$_[0]} }) {
-                  $_ && [@_[1 .. @{$_->[1]}]] ~~ $_->[1]
-                     && &{$_->[0]}
-                     && undef $_;
-               }
-
-               for (@{ $self->{any} }) {
-                  $_ && [@_[0 .. $#{$_->[1]}]] ~~ $_->[1]
-                     && &{$_->[0]}
-                     && undef $_;
+               if (my $cb = $self->[1]{$_[0]}) {
+                  shift;
+                  eval { &$cb }; _self_die if $@;
+               } else {
+                  &{ $self->[0] };
                }
             };
-            _self_die if $@;
+
+            $self
          };
 
-         $self
-      };
+         "AnyEvent::MP::Port" eq ref $self
+            or Carp::croak "$port: rcv can only be called on message matching ports, caught";
 
-      "AnyEvent::MP::Port" eq ref $self
-         or Carp::croak "$port: rcv can only be called on message matching ports, caught";
+         my ($tag, $cb) = splice @_, 0, 2;
 
-      while (@_) {
-         my ($match, $cb) = splice @_, 0, 2;
-
-         if (!ref $match) {
-            push @{ $self->{rc0}{$match}      }, [$cb];
-         } elsif (("ARRAY" eq ref $match && !ref $match->[0])) {
-            my ($type, @match) = @$match;
-            @match
-               ? push @{ $self->{rcv}{$match->[0]} }, [$cb, \@match]
-               : push @{ $self->{rc0}{$match->[0]} }, [$cb];
+         if (defined $cb) {
+            $self->[1]{$tag} = $cb;
          } else {
-            push @{ $self->{any}              }, [$cb, $match];
+            delete $self->[1]{$tag};
          }
       }
    }
@@ -694,8 +668,7 @@ sub spawn(@) {
    $_[0] =~ /::/
       or Carp::croak "spawn init function must be a fully-qualified name, caught";
 
-   ($NODE{$noderef} || add_node $noderef)
-      ->send (["", "AnyEvent::MP::_spawn" => $id, @_]);
+   snd_to_func $noderef, "AnyEvent::MP::_spawn" => $id, @_;
 
    "$noderef#$id"
 }
@@ -773,21 +746,38 @@ convenience functionality.
 This means that AEMP requires a less tightly controlled environment at the
 cost of longer node references and a slightly higher management overhead.
 
+=item * Erlang has a "remote ports are like local ports" philosophy, AEMP
+uses "local ports are like remote ports".
+
+The failure modes for local ports are quite different (runtime errors
+only) then for remote ports - when a local port dies, you I<know> it dies,
+when a connection to another node dies, you know nothing about the other
+port.
+
+Erlang pretends remote ports are as reliable as local ports, even when
+they are not.
+
+AEMP encourages a "treat remote ports differently" philosophy, with local
+ports being the special case/exception, where transport errors cannot
+occur.
+
 =item * Erlang uses processes and a mailbox, AEMP does not queue.
 
-Erlang uses processes that selctively receive messages, and therefore
-needs a queue. AEMP is event based, queuing messages would serve no useful
-purpose.
+Erlang uses processes that selectively receive messages, and therefore
+needs a queue. AEMP is event based, queuing messages would serve no
+useful purpose. For the same reason the pattern-matching abilities of
+AnyEvent::MP are more limited, as there is little need to be able to
+filter messages without dequeing them.
 
 (But see L<Coro::MP> for a more Erlang-like process model on top of AEMP).
 
 =item * Erlang sends are synchronous, AEMP sends are asynchronous.
 
-Sending messages in Erlang is synchronous and blocks the process. AEMP
-sends are immediate, connection establishment is handled in the
-background.
+Sending messages in Erlang is synchronous and blocks the process (and
+so does not need a queue that can overflow). AEMP sends are immediate,
+connection establishment is handled in the background.
 
-=item * Erlang can silently lose messages, AEMP cannot.
+=item * Erlang suffers from silent message loss, AEMP does not.
 
 Erlang makes few guarantees on messages delivery - messages can get lost
 without any of the processes realising it (i.e. you send messages a, b,
@@ -809,9 +799,9 @@ and then later sends messages to it, finding it is still alive.
 
 =item * Erlang can send messages to the wrong port, AEMP does not.
 
-In Erlang it is quite possible that a node that restarts reuses a process
-ID known to other nodes for a completely different process, causing
-messages destined for that process to end up in an unrelated process.
+In Erlang it is quite likely that a node that restarts reuses a process ID
+known to other nodes for a completely different process, causing messages
+destined for that process to end up in an unrelated process.
 
 AEMP never reuses port IDs, so old messages or old port IDs floating
 around in the network will not be sent to an unrelated port.
@@ -854,6 +844,41 @@ more reliable.
 
 This also saves round-trips and avoids sending messages to the wrong port
 (hard to do in Erlang).
+
+=back
+
+=head1 RATIONALE
+
+=over 4
+
+=item Why strings for ports and noderefs, why not objects?
+
+We considered "objects", but found that the actual number of methods
+thatc an be called are very low. Since port IDs and noderefs travel over
+the network frequently, the serialising/deserialising would add lots of
+overhead, as well as having to keep a proxy object.
+
+Strings can easily be printed, easily serialised etc. and need no special
+procedures to be "valid".
+
+And a a miniport consists of a single closure stored in a global hash - it
+can't become much cheaper.
+
+=item Why favour JSON, why not real serialising format such as Storable?
+
+In fact, any AnyEvent::MP node will happily accept Storable as framing
+format, but currently there is no way to make a node use Storable by
+default.
+
+The default framing protocol is JSON because a) JSON::XS is many times
+faster for small messages and b) most importantly, after years of
+experience we found that object serialisation is causing more problems
+than it gains: Just like function calls, objects simply do not travel
+easily over the network, mostly because they will always be a copy, so you
+always have to re-think your design.
+
+Keeping your messages simple, concentrating on data structures rather than
+objects, will keep your messages clean, tidy and efficient.
 
 =back
 

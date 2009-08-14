@@ -34,11 +34,11 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.6';
+our $VERSION = '0.7';
 our @EXPORT = qw(
-   %NODE %PORT %PORT_DATA %REG $UNIQ $RUNIQ $ID add_node load_func
+   %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID add_node load_func snd_to_func
 
-   NODE $NODE node_of snd kil _any_
+   NODE $NODE node_of snd kil
    resolve_node initialise_node
 );
 
@@ -62,6 +62,21 @@ our $WARN = sub {
    $msg =~ s/\n$//;
    warn "$msg\n";
 };
+
+sub load_func($) {
+   my $func = $_[0];
+
+   unless (defined &$func) {
+      my $pkg = $func;
+      do {
+         $pkg =~ s/::[^:]+$//
+            or return sub { die "unable to resolve '$func'" };
+         eval "require $pkg";
+      } until defined &$func;
+   }
+
+   \&$func
+}
 
 sub nonce($) {
    my $nonce;
@@ -149,9 +164,6 @@ sub node_of($) {
    $noderef
 }
 
-sub _ANY_() { 1 }
-sub _any_() { \&_ANY_ }
-
 sub TRACE() { 0 }
 
 sub _inject {
@@ -207,6 +219,22 @@ sub snd(@) {
       ->{send} (["$portid", @_]);
 }
 
+=item snd_to_func $noderef, $func, @args
+
+Expects a noderef and a name of a function. Asynchronously tries to call
+this function with the given arguments on that node.
+
+This fucntion can be used to implement C<spawn>-like interfaces.
+
+=cut
+
+sub snd_to_func {
+   my $noderef = shift;
+
+   ($NODE{$noderef} || add_node $noderef)
+      ->send (["", @_]);
+}
+
 sub kil(@) {
    my ($noderef, $portid) = split /#/, shift, 2;
 
@@ -215,6 +243,11 @@ sub kil(@) {
 
    ($NODE{$noderef} || add_node $noderef)
       ->kill ("$portid", @_);
+}
+
+sub _nodename {
+   require POSIX;
+   (POSIX::uname ())[1]
 }
 
 sub resolve_node($) {
@@ -237,47 +270,24 @@ sub resolve_node($) {
    my $idx;
    for my $t (split /,/, $noderef) {
       my $pri = ++$idx;
+
+      $t = length $t ? _nodename . ":$t" : _nodename
+         if $t =~ /^\d*$/;
       
-      if ($t =~ /^\d*$/) {
-         require POSIX;
-         my $nodename = (POSIX::uname ())[1];
+      my ($host, $port) = AnyEvent::Socket::parse_hostport $t, "aemp=$DEFAULT_PORT"
+         or Carp::croak "$t: unparsable transport descriptor";
 
-         $cv->begin;
-         AnyEvent::Socket::resolve_sockaddr $nodename, $t || "aemp=$DEFAULT_PORT", "tcp", 0, undef, sub {
-            for (@_) {
-               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
-               push @res, [
-                  $pri += 1e-5,
-                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
-               ];
-            }
-            $cv->end;
-         };
-
-#         my (undef, undef, undef, undef, @ipv4) = gethostbyname $nodename;
-#
-#         for (@ipv4) {
-#            push @res, [
-#               $pri,
-#               AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $_, $t || $DEFAULT_PORT,
-#            ];
-#         }
-      } else {
-         my ($host, $port) = AnyEvent::Socket::parse_hostport $t, "aemp=$DEFAULT_PORT"
-            or Carp::croak "$t: unparsable transport descriptor";
-
-         $cv->begin;
-         AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
-            for (@_) {
-               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
-               push @res, [
-                  $pri += 1e-5,
-                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
-               ];
-            }
-            $cv->end;
+      $cv->begin;
+      AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
+         for (@_) {
+            my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
+            push @res, [
+               $pri += 1e-5,
+               AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
+            ];
          }
-      }
+         $cv->end;
+      };
    }
 
    $cv->end;
@@ -288,8 +298,13 @@ sub resolve_node($) {
 sub initialise_node(@) {
    my ($noderef, @others) = @_;
 
-   @others = @{ $AnyEvent::MP::Config::CFG{seeds} }
-      unless @others;
+   my $profile = AnyEvent::MP::Config::find_profile
+                    +(defined $noderef ? $noderef : _nodename);
+
+   $noderef = $profile->{noderef}
+      if exists $profile->{noderef};
+
+   push @others, @{ $profile->{seeds} };
 
    if ($noderef =~ /^slave\/(.*)$/) {
       $SLAVE = AE::cv;
@@ -344,10 +359,13 @@ sub initialise_node(@) {
 
       $SLAVE = 1;
    }
+
+   (load_func $_)->()
+      for @{ $profile->{services} };
 }
 
 #############################################################################
-# node moniotirng and info
+# node monitoring and info
 
 sub _uniq_nodes {
    my %node;
@@ -415,21 +433,6 @@ sub _inject_nodeevent($$;@) {
 #############################################################################
 # self node code
 
-sub load_func($) {
-   my $func = $_[0];
-
-   unless (defined &$func) {
-      my $pkg = $func;
-      do {
-         $pkg =~ s/::[^:]+$//
-            or return sub { die "unable to resolve '$func'" };
-         eval "require $pkg";
-      } until defined &$func;
-   }
-
-   \&$func
-}
-
 our %node_req = (
    # internal services
 
@@ -454,7 +457,13 @@ our %node_req = (
    },
    # node changed its name (for slave nodes)
    iam => sub {
+      # get rid of bogus slave/xxx name, hopefully
+      delete $NODE{$SRCNODE->{noderef}};
+
+      # change noderef
       $SRCNODE->{noderef} = $_[0];
+
+      # anchor
       $NODE{$_[0]} = $SRCNODE;
    },
 

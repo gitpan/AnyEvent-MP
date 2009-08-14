@@ -1,73 +1,41 @@
 #!/opt/bin/perl
 
-use AnyEvent;
-use AnyEvent::Handle;
+use common::sense;
 use AnyEvent::MP;
 
-my $server_node = "127.0.0.1:1299";
+my ($nick, $servernode) = @ARGV;
 
-initialise_node "slave/", $server_node;
+initialise_node "slave/", $servernode;
 
-print "initialized client\n";
+$| = 1;
 
-my $client_port = port;
+my $servernode = (resolve_node $servernode)->recv;
 
-snd $server_node, lookup => "chatter", $client_port, "resolved";
+my $port = port;
 
-my $resolved_cv = AnyEvent->condvar;
-my $server_port;
+my ($client, $server);
 
-# setup a receiver callback for the 'resolved' message:
-rcv $client_port, resolved => sub {
-   my ($tag, $chatter_port_id) = @_;
+sub server_connect {
+   print "\rconnecting...\n";
 
-   print "Resolved the server port 'chatter' to $chatter_port_id\n";
-   $server_port = $chatter_port_id;
+   $client = port { print "\r  \r@_\n> " };
+   mon $client, sub {
+      print "\rdisconnected @_\n";
+      &server_connect;
+   };
 
-   $resolved_cv->send;
-   1
-};
-
-# lets block the client until we have resolved the server port.
-$resolved_cv->recv;
-
-# now setup another receiver callback for the chat messages:
-rcv $client_port, message => sub {
-   my ($tag, $msg) = @_;
-
-   print "chat> $msg\n";
-   0
-};
-
-# send a 'join' message to the server:
-snd $server_port, join => "$client_port";
-
-sub send_message {
-   my ($msg) = @_;
-
-   snd $server_port, message => $msg;
+   $server = spawn $servernode, "::client_connect", $client, $nick;
+   mon $server, $client;
 }
 
-# make an AnyEvent condition variable for the 'quit' condition
-# (when we want to exit the client).
-my $quit_cv = AnyEvent->condvar;
+server_connect;
 
-my $stdin_hdl = AnyEvent::Handle->new (
-   fh       => *STDIN,
-   on_error => sub { $quit_cv->send },
-   on_read  => sub {
-      my ($hdl) = @_;
+my $w = AE::io 0, 0, sub {
+   chomp (my $line = <STDIN>);
+   print "> ";
+   snd $server, $line;
+};
 
-      $hdl->push_read (line => sub {
-         my ($hdl, $line) = @_;
+print "> ";
+AE::cv->recv;
 
-         if ($line =~ /^\/quit/) { # /quit will end the client
-            $quit_cv->send;
-         } else {
-            send_message ($line);
-         }
-      });
-   }
-);
-
-$quit_cv->recv;

@@ -58,8 +58,15 @@ sub save {
       or Carp::croak "$CONFIG_FILE: $!";
 }
 
-sub node_config {
+sub config {
    \%CFG
+}
+
+sub find_profile($) {
+   +{
+      %CFG,
+      %{ $CFG{profile}{$_[0]} },
+   }
 }
 
 load;

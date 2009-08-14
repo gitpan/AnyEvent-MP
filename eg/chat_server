@@ -1,42 +1,34 @@
 #!/opt/bin/perl
 
-use AnyEvent;
+use common::sense;
 use AnyEvent::MP;
 
-initialise_node "127.0.0.1:1299";
+initialise_node;
 
-print "initialized server\n";
+my %clients;
 
-my $chatter_port = port;
+sub msg {
+   print "relaying: $_[0]\n";
+   snd $_, $_[0]
+      for values %clients;
+}
 
-reg $chatter_port, "chatter";
+sub client_connect {
+   my ($client, $name) = @_;
 
-my %client_ports;
-
-rcv $chatter_port,
-   join => sub {
-      my ($tag, $client_port) = @_;
-
-      print "got new client port: $client_port\n";
-      $client_ports{$client_port} = 1;
-
-      mon $client_port, sub {
-         my (@reason) = @_;
-         print "client disconnected: " . join (', ', @reason) . "\n";
-         delete $client_ports{$client_port}
-      };
-
-      0
-   },
-   message => sub {
-      my ($tag, $msg) = @_;
-
-      print "message> $msg\n";
-
-      snd $_, message => $msg
-         for keys %client_ports;
-
-      0
+   mon $client;
+   mon $client, sub {
+      delete $clients{$client};
+      msg "$name (quits, @_)";
    };
 
-AnyEvent->condvar->recv;
+   $clients{$client} = $client;
+
+   msg "$name (joins)";
+
+   rcv $SELF, sub { msg "$name: $_[0]" };
+}
+
+warn "server ready.\n";
+
+AE::cv->recv;

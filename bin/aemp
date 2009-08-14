@@ -9,40 +9,80 @@
    aemp command args...
 
    # protocol commands
-   aemp snd <port> <arg...>    # send a message
-   aemp mon <port>             # wait till port is killed
-   aemp rpc <port> <arg...>    # send message, append reply
+   aemp snd <port> <arg...>     # send a message
+   aemp mon <port>              # wait till port is killed
+   aemp rpc <port> <arg...>     # send message, append reply
+
+   # run a node
+   aemp run initialise_args...  # run a node
+
+   # node configuration: protocol endpoints
+   aemp setnoderef <noderef>    # configure the real noderef
+   aemp clrnoderef              # reset noderef to default
 
    # node configuration: secret
-   aemp gensecret              # generate a random shared secret
-   aemp setsecret <secret>     # set the shared secret
-   aemp clrsecret              # remove the secret
+   aemp gensecret               # generate a random shared secret
+   aemp setsecret <secret>      # set the shared secret
+   aemp clrsecret               # remove the secret
 
    # node configuration: TLS
-   aemp setcert <file>         # set a certificate (key.pem + certificate.pem)
-   aemp clrcert                # remove certificate
-   aemp gencert                # generate a random certificate
+   aemp setcert <file>          # set a certificate (key.pem + certificate.pem)
+   aemp clrcert                 # remove certificate
+   aemp gencert                 # generate a random certificate
 
-   # node configuration
-   aemp setseeds noderef...    # set seednodes
-   aemp addseed noderef        # add a seednode
-   aemp delseed noderef        # remove seednode
+   # node configuration: seed nodes for bootstrapping
+   aemp setseeds <noderef>...   # set seednodes
+   aemp addseed <noderef>       # add a seednode
+   aemp delseed <noderef>       # remove seednode
+
+   # node configuration: services
+   aemp setservices initfunc... # set service functions
+   aemp addservice <initfunc>   # add an instance of a service
+   aemp delservice <initfunc>   # delete one instance of a service
+
+   # profile-specific configuration
+   aemp profile <name> <command>... # apply command to profile only
+   aemp delprofile <name>       # eradicate the named profile
+
+   # debugging
+   aemp trace <noderef>         # trace the network topology
 
 =head1 DESCRIPTION
 
-With aemp you can configure various aspects of AnyEvent::MP and it's protocol.
+With aemp you can configure various aspects of AnyEvent::MP and its
+protocol.
+
+You can also start a "default node", a node that only depends on the
+static configuration.
 
 =cut
 
 use common::sense;
+
+BEGIN {
+   if ($ARGV[0] eq "run") {
+      shift;
+
+      # d'oh
+      eval "use AnyEvent::Watchdog qw(autorestart heartbeat=300)";
+
+      require AnyEvent;
+      require AnyEvent::MP;
+      AnyEvent::MP::initialise_node (@ARGV);
+
+      AnyEvent::detect () eq "AnyEvent::Impl::E"
+         ? EV::loop ()
+         : AE::cv ()->recv;
+   }
+}
 
 use Carp ();
 
 use AnyEvent;
 use AnyEvent::Util;
 
-use AnyEvent::MP::Config;
 use AnyEvent::MP;
+use AnyEvent::MP::Config;
 
 sub my_run_cmd {
    my ($cmd) = @_;
@@ -68,8 +108,8 @@ sub gen_cert {
    "$cert$key"
 }
 
-our $cfg     = \%AnyEvent::MP::Config::CFG;
-our $nodecfg = $cfg;
+our $cfg     = AnyEvent::MP::Config::config;
+our $profile = $cfg;
 
 sub resolve_port {
    my ($node, $port) = split /#/, $_[0], 2;
@@ -77,6 +117,43 @@ sub resolve_port {
    $node = (resolve_node $node)->recv;
    "$node#$port"
 }
+
+sub trace {
+   my ($node) = @_;
+   my $cv = AE::cv;
+   my %seen;
+
+   my $to = AE::timer 15, 0, sub {
+      warn "timeout\n";
+      $cv->();
+   };
+
+   initialise_node "slave/", $node;
+
+   my $reply = port {
+      my ($node, @neigh) = @_;
+
+      @neigh = grep $_ ne $NODE, @neigh;
+
+      print +(join " ", $node, @neigh), "\n";
+
+      for (@neigh) {
+         unless ($seen{$_}++) {
+            $cv->begin;
+            snd $_, up_nodes => $SELF => $_;
+         }
+      }
+
+      $cv->end;
+   };
+
+   $cv->begin;
+   snd $reply, seed => $node;
+
+   $cv->recv;
+}
+
+sub docmd;
 
 our %CMD = (
    snd => sub {
@@ -115,56 +192,124 @@ our %CMD = (
       print join " ", $cv->recv, "\n";
    },
 
-   setsecret => sub {
-      @ARGV == 1
+   trace => sub {
+      @ARGV >= 1
+         or die "noderef missing\n";
+
+      trace +(resolve_node shift @ARGV)->recv;
+   },
+
+   setnoderef => sub {
+      @ARGV >= 1
          or die "shared secret missing\n";
 
-      $nodecfg->{secret} = shift @ARGV;
+      $profile->{noderef} = shift @ARGV;
+      ++$cfg->{dirty};
+   },
+   clrnoderef => sub {
+      delete $profile->{noderef};
+      ++$cfg->{dirty};
+   },
+
+   setsecret => sub {
+      @ARGV >= 1
+         or die "shared secret missing\n";
+
+      $profile->{secret} = shift @ARGV;
       ++$cfg->{dirty};
    },
    gensecret => sub {
-      $nodecfg->{secret} = AnyEvent::MP::Base::asciibits AnyEvent::MP::Base::nonce 64;
+      $profile->{secret} = AnyEvent::MP::Base::asciibits AnyEvent::MP::Base::nonce 64;
       ++$cfg->{dirty};
    },
    clrsecret => sub {
-      delete $nodecfg->{secret};
+      delete $profile->{secret};
       ++$cfg->{dirty};
    },
 
    setcert => sub {
-      @ARGV == 1
+      @ARGV >= 1
          or die "key+certificate pem filename missing\n";
 
       open my $fh, "<", $ARGV[0]
          or die "$ARGV[0]: $!";
 
       local $/;
-      $nodecfg->{cert} = <$fh>;
+      $profile->{cert} = <$fh>;
       ++$cfg->{dirty};
    },
    gencert => sub {
-      $nodecfg->{cert} = gen_cert;
+      $profile->{cert} = gen_cert;
       ++$cfg->{dirty};
    },
    clrcert => sub {
-      delete $nodecfg->{cert};
+      delete $profile->{cert};
       ++$cfg->{dirty};
    },
 
    setseeds => sub {
-      $cfg->{seeds} = [@ARGV];
+      $profile->{seeds} = [@ARGV];
       @ARGV = ();
       ++$cfg->{dirty};
    },
    addseed => sub {
+      @ARGV >= 1
+         or die "seed noderef missing\n";
       my $seed = shift @ARGV;
-      @{ $cfg->{seeds} } = grep $_ ne $seed, @{ $cfg->{seeds} };
-      push @{ $cfg->{seeds} }, $seed;
+
+      @{ $profile->{seeds} } = grep $_ ne $seed, @{ $profile->{seeds} };
+      push @{ $profile->{seeds} }, $seed;
       ++$cfg->{dirty};
    },
-   addseed => sub {
+   delseed => sub {
+      @ARGV >= 1
+         or die "seed noderef missing\n";
       my $seed = shift @ARGV;
-      @{ $cfg->{seeds} } = grep $_ ne $seed, @{ $cfg->{seeds} };
+
+      @{ $profile->{seeds} } = grep $_ ne $seed, @{ $profile->{seeds} };
+      ++$cfg->{dirty};
+   },
+
+   setservices => sub {
+      $profile->{services} = [@ARGV];
+      @ARGV = ();
+      ++$cfg->{dirty};
+   },
+   addservice => sub {
+      @ARGV >= 1
+         or die "service specification missing\n";
+      my $service = shift @ARGV;
+      push @{ $profile->{services} }, $service;
+      ++$cfg->{dirty};
+   },
+   delservice => sub {
+      @ARGV >= 1
+         or die "service specification missing\n";
+      my $service = shift @ARGV;
+      for (0 .. $#{ $profile->{services} }) {
+         next unless $profile->{services}[$_] eq $service;
+         splice @{ $profile->{services} }, $_, 1;
+         last;
+      }
+      ++$cfg->{dirty};
+   },
+
+   profile => sub {
+      @ARGV >= 2
+         or die "profile name or subcommand are missing\n";
+      my $name = shift @ARGV;
+
+      $profile = $cfg->{profile}{$name} ||= {};
+      ++$cfg->{dirty};
+
+      docmd;
+   },
+   delprofile => sub {
+      @ARGV >= 1
+         or die "profile name is missing\n";
+      my $name = shift @ARGV;
+
+      delete $cfg->{profile}{$name};
       ++$cfg->{dirty};
    },
 );

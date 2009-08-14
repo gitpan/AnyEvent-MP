@@ -3,49 +3,55 @@
 =head1 Introduction and Terminology
 
 This is a tutorial about how to get the swing of the new L<AnyEvent::MP>
-module. Which allows us to transparently pass messages to our own process
+module, which allows us to transparently pass messages to our own process
 and to other processes on another or the same host.
 
-What kind of messages? Well, basically a message here means a list of
-Perl strings, numbers, hashes and arrays, mostly everything that can be
-expressed as a L<JSON> text (as JSON is used by default in the protocol).
+What kind of messages? Well, basically a message here means a list of Perl
+strings, numbers, hashes and arrays, anything that can be expressed as a
+L<JSON> text (as JSON is used by default in the protocol).
 
-And next you might ask: between which entities are those messages
-being "passed"? Effectively between I<nodes>: a nodes is basically a
+And next you might ask: between which entities are those messages being
+"passed"? Physically within or between I<nodes>: a nodes is basically a
 process/program that use L<AnyEvent::MP> and can run either on the same or
 different hosts.
 
 To make this more managable, every node can contain any number of
 I<ports>: Ports are ultimately the receivers of your messages.
 
-In this tutorial I'll show you how to write a simple chat server based on
-L<AnyEvent::MP>.
+In this tutorial I'll show you how to write a simple chat server based
+on L<AnyEvent::MP>. This example is used because it nicely shows how to
+organise a simple application, but keep in mind that every node trusts any
+other, so this chat cannot be used to implement a real chat server and
+client system, but it can be used to implement a distributed chat server
+for example.
 
-=head1 System Requirements
+=head1 System Requirements and System Setup
 
 Before we can start we have to make sure some things work on your
 system.
 
-You should of course also make sure that L<AnyEvent> and L<AnyEvent::MP>
+You should of course first make sure that L<AnyEvent> and L<AnyEvent::MP>
 are installed. But how to do that is out of scope of this tutorial.
 
-Then we have to setup a I<shared secret>. For two L<AnyEvent::MP> nodes to
+Then we have to setup a I<shared secret>: for two L<AnyEvent::MP> nodes to
 be able to communicate with each other and authenticate each other it is
-necessary to setup the same I<shared secret> for both of them.
+necessary to setup the same I<shared secret> for both of them (use use TLS
+certificates).
 
-The easiest way is to use the F<aemp> utility:
+The easiest way is to set this up is to use the F<aemp> utility:
 
    aemp gensecret
 
-This creates the F<$HOME/.perl-anyevent-mp> config file and generates a
+This creates a F<$HOME/.perl-anyevent-mp> config file and generates a
 random shared secret. You can copy this file to any other system and then
-communicate with it. You cna also select your own shared secret (F<aemp
-setsecret>) and for increased security requirements you can even create a
-TLS certificate (F<aemp gencert>).
+communicate with it. You can also select your own shared secret (F<aemp
+setsecret>) and for increased security requirements you can even create
+a TLS certificate (F<aemp gencert>), causing connections to not just be
+authenticated, but also to be encrypted.
 
 Connections will only be successful when the nodes that want to connect to
 each other have the same I<shared secret> (or successfully verify the TLS
-certificate).
+certificate of the other side).
 
 B<If something does not work as expected, and for example tcpdump shows
 that the connections are closed almost immediatly, you should make sure
@@ -453,9 +459,9 @@ Now, for the interested parties, let me explain some details about the protocol
 that L<AnyEvent::MP> nodes use to communicate to each other. If you are not
 interested you can skip this section.
 
-Usually TCP is used for communication. Each I<node>, if configured to be a
-I<public> node with the C<become_public> function will listen on the configured
-TCP port (default is 4040).
+Usually TCP is used for communication. Each I<node>, if configured to be
+a I<public> node with the C<initialise_node> function will listen on the
+configured TCP port (default is 4040).
 
 If then one I<node> wants to send a message to another I<node> it will
 connect to the host and port given in the I<port ID>.

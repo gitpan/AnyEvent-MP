@@ -12,12 +12,13 @@ my $mm = MM->new({
     VERSION_FROM => "MP/Kernel.pm",
     EXE_FILES    => ["bin/aemp"],
     PREREQ_PM    => {
-       AnyEvent         => 5.11,
-       Digest::MD6      => 0,
-       Digest::HMAC_MD6 => 0,
-       MIME::Base64     => 3,
-       JSON::XS         => 2.25,
-       common::sense    => 0,
+       AnyEvent           => 5.11,
+       AnyEvent::Watchdog => 0.1,
+       Digest::MD6        => 0,
+       Digest::HMAC_MD6   => 0,
+       MIME::Base64       => 3,
+       JSON::XS           => 2.25,
+       common::sense      => 0,
     },
 });
 

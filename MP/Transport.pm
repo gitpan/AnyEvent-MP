@@ -137,7 +137,7 @@ sub new {
    {
       Scalar::Util::weaken (my $self = $self);
 
-      my $config = AnyEvent::MP::Config::node_config;
+      my $config = AnyEvent::MP::Config::config;
 
       my $latency = $config->{network_latency} || LATENCY;
 

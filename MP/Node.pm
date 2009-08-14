@@ -174,6 +174,16 @@ package AnyEvent::MP::Node::Indirect;
 
 use base "AnyEvent::MP::Node::Direct";
 
+sub transport_reset {
+   my ($self) = @_;
+
+   # as an optimisation, immediately nuke slave nodes
+   delete $AnyEvent::MP::Kernel::NODE{$self->{noderef}}
+      if $self->{transport};
+
+   $self->SUPER::transport_reset;
+}
+
 sub connect {
    my ($self) = @_;
 
