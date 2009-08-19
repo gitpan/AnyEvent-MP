@@ -59,12 +59,15 @@ static configuration.
 
 use common::sense;
 
+# must come before anything else
 BEGIN {
    if ($ARGV[0] eq "run") {
       shift;
 
       # d'oh
-      eval "use AnyEvent::Watchdog qw(autorestart heartbeat=300)";
+      require AnyEvent::Watchdog;
+      AnyEvent::Watchdog::autorestart (1);
+      AnyEvent::Watchdog::heartbeat (300);
 
       require AnyEvent;
       require AnyEvent::MP;
@@ -166,7 +169,7 @@ our %CMD = (
       my $to = AE::timer 5, 0, sub { $cv->("timeout") };
       mon $port, $cv;
       my $reply = port { &$cv; 1 };
-      snd node_of $port, relay => $reply, "ok";
+      snd node_of $port, snd => $reply, "ok";
 
       print join " ", $cv->recv, "\n";
    },

@@ -128,7 +128,7 @@ use base "Exporter";
 our $VERSION = $AnyEvent::MP::Kernel::VERSION;
 
 our @EXPORT = qw(
-   NODE $NODE *SELF node_of _any_
+   NODE $NODE *SELF node_of after
    resolve_node initialise_node
    snd rcv mon kil reg psub spawn
    port
@@ -199,11 +199,19 @@ directly or because it is part of the configuration profile): The node
 will try to connect to all of them and will become a slave attached to the
 first node it can successfully connect to.
 
+Note that slave nodes cannot change their name, and consequently, their
+master, so if the master goes down, the slave node will not function well
+anymore until it can re-establish conenciton to its master. This makes
+slave nodes unsuitable for long-term nodes or fault-tolerant networks.
+
 =back
 
 This function will block until all nodes have been resolved and, for slave
 nodes, until it has successfully established a connection to a master
 server.
+
+All the seednodes will also be specially marked to automatically retry
+connecting to them infinitely.
 
 Example: become a public node listening on the guessed noderef, or the one
 specified via C<aemp> for the current node. This should be the most common
@@ -390,7 +398,7 @@ sub rcv($@) {
    my $port = shift;
    my ($noderef, $portid) = split /#/, $port, 2;
 
-   ($NODE{$noderef} || add_node $noderef) == $NODE{""}
+   $NODE{$noderef} == $NODE{""}
       or Carp::croak "$port: rcv can only be called on local ports, caught";
 
    while (@_) {
@@ -498,6 +506,9 @@ message loss has been detected. No messages will be lost "in between"
 (after the first lost message no further messages will be received by the
 port). After the monitoring action was invoked, further messages might get
 delivered again.
+
+Note that monitoring-actions are one-shot: once released, they are removed
+and will not trigger again.
 
 In the first form (callback), the callback is simply called with any
 number of C<@reason> elements (no @reason means that the port was deleted
@@ -673,51 +684,27 @@ sub spawn(@) {
    "$noderef#$id"
 }
 
-=back
+=item after $timeout, @msg
 
-=head1 NODE MESSAGES
+=item after $timeout, $callback
 
-Nodes understand the following messages sent to them. Many of them take
-arguments called C<@reply>, which will simply be used to compose a reply
-message - C<$reply[0]> is the port to reply to, C<$reply[1]> the type and
-the remaining arguments are simply the message data.
+Either sends the given message, or call the given callback, after the
+specified number of seconds.
 
-While other messages exist, they are not public and subject to change.
-
-=over 4
+This is simply a utility function that come sin handy at times.
 
 =cut
 
-=item lookup => $name, @reply
+sub after($@) {
+   my ($timeout, @action) = @_;
 
-Replies with the port ID of the specified well-known port, or C<undef>.
-
-=item devnull => ...
-
-Generic data sink/CPU heat conversion.
-
-=item relay => $port, @msg
-
-Simply forwards the message to the given port.
-
-=item eval => $string[ @reply]
-
-Evaluates the given string. If C<@reply> is given, then a message of the
-form C<@reply, $@, @evalres> is sent.
-
-Example: crash another node.
-
-   snd $othernode, eval => "exit";
-
-=item time => @reply
-
-Replies the the current node time to C<@reply>.
-
-Example: tell the current node to send the current time to C<$myport> in a
-C<timereply> message.
-
-   snd $NODE, time => $myport, timereply => 1, 2;
-   # => snd $myport, timereply => 1, 2, <time>
+   my $t; $t = AE::timer $timeout, 0, sub {
+      undef $t;
+      ref $action[0]
+         ? $action[0]()
+         : snd @action;
+   };
+}
 
 =back
 

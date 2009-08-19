@@ -1,13 +1,15 @@
 #!/opt/bin/perl
 
 # Usage: ./chat_server
-# implement a chat server using "traditional message passing"
+# implement a chat client using "bridge-head" methodology.
 
 use common::sense;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
 initialise_node;
+
+AnyEvent::MP::Global::register $NODE, "eg_chat_server2";
 
 my %clients;
 
@@ -17,26 +19,21 @@ sub msg {
       for values %clients;
 }
 
-our $server = port;
-
-rcv $server, join => sub {
+sub client_connect {
    my ($client, $nick) = @_;
 
-   $clients{$client} = $client;
-
+   mon $client;
    mon $client, sub {
       delete $clients{$client};
       msg "$nick (quits, @_)";
    };
+
+   $clients{$client} = $client;
+
    msg "$nick (joins)";
-};
 
-rcv $server, privmsg => sub {
-   my ($nick, $msg) = @_;
-   msg "$nick: $msg";
-};
-
-AnyEvent::MP::Global::register $server, "eg_chat_server";
+   rcv $SELF, sub { msg "$nick: $_[0]" };
+}
 
 warn "server ready.\n";
 

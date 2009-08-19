@@ -289,7 +289,7 @@ sub new {
 
                $self->{hdl}->rtimeout ($self->{remote_greeting}{timeout});
                $self->{hdl}->wtimeout ($arg{timeout} - LATENCY);
-               $self->{hdl}->on_wtimeout (sub { $self->send (["", "devnull"]) });
+               $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
 
                $self->connected;
 
@@ -324,7 +324,7 @@ sub error {
    (delete $self->{release})->()
       if exists $self->{release};
    
-   $AnyEvent::MP::Kernel::WARN->("$self->{peerhost}:$self->{peerport}: $msg");
+#   $AnyEvent::MP::Kernel::WARN->(7, "$self->{peerhost}:$self->{peerport}: $msg");
    $self->destroy;
 }
 
@@ -333,10 +333,6 @@ sub connected {
 
    (delete $self->{release})->()
       if exists $self->{release};
-
-   # first connect with a master node
-   $AnyEvent::MP::Kernel::SLAVE->($self->{remote_node})
-      if ref $AnyEvent::MP::Kernel::SLAVE;
 
    my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
    Scalar::Util::weaken ($self->{node} = $node);

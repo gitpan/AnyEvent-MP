@@ -24,6 +24,7 @@ connected nodes etc. are needed.
 package AnyEvent::MP::Kernel;
 
 use common::sense;
+use POSIX ();
 use Carp ();
 use MIME::Base64 ();
 
@@ -34,12 +35,15 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.7';
+our $VERSION = '0.8';
 our @EXPORT = qw(
-   %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID add_node load_func snd_to_func
+   %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
+   connect_node add_node load_func snd_to_func snd_on eval_on
 
    NODE $NODE node_of snd kil
+   port_is_local
    resolve_node initialise_node
+   known_nodes up_nodes mon_nodes node_is_known node_is_up
 );
 
 our $DEFAULT_PORT = "4040";
@@ -48,19 +52,29 @@ our $CONNECT_INTERVAL =  2; # new connect every 2s, at least
 our $NETWORK_LATENCY  =  3; # activity timeout
 our $MONITOR_TIMEOUT  = 15; # fail monitoring after this time
 
-=item $AnyEvent::MP::Kernel::WARN
+=item $AnyEvent::MP::Kernel::WARN->($level, $msg)
 
 This value is called with an error or warning message, when e.g. a connection
 could not be created, authorisation failed and so on.
+
+C<$level> sould be C<0> for messages ot be logged always, C<1> for
+unexpected messages and errors, C<2> for warnings, C<7> for messages about
+node connectivity and services, C<8> for debugging messages and C<9> for
+tracing messages.
 
 The default simply logs the message to STDERR.
 
 =cut
 
 our $WARN = sub {
-   my $msg = $_[0];
+   my ($level, $msg) = @_;
+
    $msg =~ s/\n$//;
-   warn "$msg\n";
+
+   printf STDERR "%s <%d> %s\n",
+          (POSIX::strftime "%Y-%m-%d %H:%M:%S", localtime time),
+          $level,
+          $msg;
 };
 
 sub load_func($) {
@@ -164,10 +178,14 @@ sub node_of($) {
    $noderef
 }
 
-sub TRACE() { 0 }
+BEGIN {
+   *TRACE = $ENV{PERL_ANYEVENT_MP_TRACE}
+      ? sub () { 1 }
+      : sub () { 0 };
+}
 
 sub _inject {
-   warn "RCV $SRCNODE->{noderef} -> @_\n" if TRACE;#d#
+   warn "RCV $SRCNODE->{noderef} -> @_\n" if TRACE && @_;#d#
    &{ $PORT{+shift} or return };
 }
 
@@ -200,7 +218,6 @@ sub add_node {
             or Carp::croak "$noderef: not a resolved node reference ('$_' contains unresolved address)";
       }
 
-      # TODO: for indirect sends, use a different class
       $node = new AnyEvent::MP::Node::Direct $noderef;
    }
 
@@ -208,6 +225,10 @@ sub add_node {
       for $noderef, split /,/, $noderef;
 
    $node
+}
+
+sub connect_node {
+   &add_node->connect;
 }
 
 sub snd(@) {
@@ -219,7 +240,19 @@ sub snd(@) {
       ->{send} (["$portid", @_]);
 }
 
-=item snd_to_func $noderef, $func, @args
+=item $is_local = port_is_local $port
+
+Returns true iff the port is a local port.
+
+=cut
+
+sub port_is_local($) {
+   my ($noderef, undef) = split /#/, $_[0], 2;
+
+   $NODE{$noderef} == $NODE{""}
+}
+
+=item snd_to_func $node, $func, @args
 
 Expects a noderef and a name of a function. Asynchronously tries to call
 this function with the given arguments on that node.
@@ -228,11 +261,34 @@ This fucntion can be used to implement C<spawn>-like interfaces.
 
 =cut
 
-sub snd_to_func {
+sub snd_to_func($$;@) {
    my $noderef = shift;
 
    ($NODE{$noderef} || add_node $noderef)
       ->send (["", @_]);
+}
+
+=item snd_on $node, @msg
+
+Executes C<snd> with the given C<@msg> (which must include the destination
+port) on the given node.
+
+=cut
+
+sub snd_on($@) {
+   my $node = shift;
+   snd $node, snd => @_;
+}
+
+=item eval_on $node, $string
+
+Evaluates the given string as Perl expression on the given node.
+
+=cut
+
+sub eval_on($@) {
+   my $node = shift;
+   snd $node, eval => @_;
 }
 
 sub kil(@) {
@@ -295,6 +351,14 @@ sub resolve_node($) {
    $cv
 }
 
+sub _node_rename {
+   $NODE = shift;
+
+   my $self = $NODE{""};
+   $NODE{$NODE} = delete $NODE{$self->{noderef}};
+   $self->{noderef} = $NODE;
+}
+
 sub initialise_node(@) {
    my ($noderef, @others) = @_;
 
@@ -323,11 +387,9 @@ sub initialise_node(@) {
 
    @others = map $_->recv, map +(resolve_node $_), @others;
 
-   $NODE = $noderef->recv;
+   _node_rename $noderef->recv;
 
    for my $t (split /,/, $NODE) {
-      $NODE{$t} = $NODE{""};
-
       my ($host, $port) = AnyEvent::Socket::parse_hostport $t;
 
       $LISTENER{$t} = AnyEvent::MP::Transport::mp_server $host, $port,
@@ -341,18 +403,25 @@ sub initialise_node(@) {
       ;
    }
 
-   (add_node $_)->connect for @others;
+   for (@others) {
+      my $node = add_node $_;
+      $node->{autoconnect} = 1;
+      $node->connect;
+   }
 
    if ($SLAVE) {
       my $timeout = AE::timer $MONITOR_TIMEOUT, 0, sub { $SLAVE->() };
-      $MASTER = $SLAVE->recv;
-      defined $MASTER
+      my $master = $SLAVE->recv;
+      $master
          or Carp::croak "AnyEvent::MP: unable to enter slave mode, unable to connect to a seednode.\n";
+
+      $MASTER = $master->{noderef};
+      $master->{autoconnect} = 1;
 
       (my $via = $MASTER) =~ s/,/!/g; 
 
       $NODE .= "\@$via";
-      $NODE{$NODE} = $NODE{""};
+      _node_rename $NODE;
 
       $_->send (["", iam => $NODE])
          for values %NODE;
@@ -360,8 +429,14 @@ sub initialise_node(@) {
       $SLAVE = 1;
    }
 
-   (load_func $_)->()
-      for @{ $profile->{services} };
+   for (@{ $profile->{services} }) {
+      if (s/::$//) {
+         eval "require $_";
+         die $@ if $@;
+      } else {
+         (load_func $_)->();
+      }
+   }
 }
 
 #############################################################################
@@ -375,9 +450,35 @@ sub _uniq_nodes {
    values %node;
 }
 
+=item node_is_known $noderef
+
+Returns true iff the given node is currently known to the system.
+
+=cut
+
+sub node_is_known($) {
+   exists $NODE{$_[0]}
+}
+
+=item node_is_up $noderef
+
+Returns true if the given node is "up", that is, the kernel thinks it has
+a working connection to it.
+
+If the node is known but not currently connected, returns C<0>. If the
+node is not known, returns C<undef>.
+
+=cut
+
+sub node_is_up($) {
+   ($NODE{$_[0]} or return)->{transport}
+      ? 1 : 0
+}
+
 =item known_nodes
 
-Returns the noderefs of all nodes connected to this node.
+Returns the noderefs of all nodes connected to this node, including
+itself.
 
 =cut
 
@@ -404,7 +505,7 @@ is established) or down (connection is lost).
 Node up messages can only be followed by node down messages for the same
 node, and vice versa.
 
-The fucntino returns an optional guard which can be used to de-register
+The function returns an optional guard which can be used to de-register
 the monitoring callback again.
 
 =cut
@@ -420,14 +521,14 @@ sub mon_nodes($) {
 }
 
 sub _inject_nodeevent($$;@) {
-   my ($node, @args) = @_;
-
-   unshift @args, $node->{noderef};
+   my ($node, $up, @reason) = @_;
 
    for my $cb (values %MON_NODES) {
-      eval { $cb->(@args); 1 }
-         or $WARN->($@);
+      eval { $cb->($node->{noderef}, $up, @reason); 1 }
+         or $WARN->(1, $@);
    }
+
+   $WARN->(7, "$node->{noderef} is " . ($up ? "up" : "down") . " (@reason)");
 }
 
 #############################################################################
@@ -467,13 +568,11 @@ our %node_req = (
       $NODE{$_[0]} = $SRCNODE;
    },
 
-   # public services
+   # "public" services - not actually public
 
    # relay message to another node / generic echo
-   relay => sub {
-      &snd;
-   },
-   relay_multiple => sub {
+   snd => \&snd,
+   snd_multi => sub {
       snd @$_ for @_
    },
 
@@ -499,13 +598,16 @@ our %node_req = (
    devnull => sub {
       #
    },
+   "" => sub {
+      # empty messages are sent by monitoring
+   },
 );
 
-$NODE{""} = $NODE{$NODE} = new AnyEvent::MP::Node::Self noderef => $NODE;
+$NODE{""} = $NODE{$NODE} = new AnyEvent::MP::Node::Self $NODE;
 $PORT{""} = sub {
    my $tag = shift;
    eval { &{ $node_req{$tag} ||= load_func $tag } };
-   $WARN->("error processing node message: $@") if $@;
+   $WARN->(2, "error processing node message: $@") if $@;
 };
 
 =back

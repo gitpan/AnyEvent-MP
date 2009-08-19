@@ -1,7 +1,7 @@
 #!/opt/bin/perl
 
-# Usage: ./chat_client nickname optional-servername
-# implement a chat client using "traditional message passing"
+# Usage: ./chat_client nickname optional-servernode
+# implement a chat client using "bridge-head" methodology.
 
 use common::sense;
 use AnyEvent::MP;
@@ -18,12 +18,10 @@ my $port = port;
 my ($client, $server);
 
 sub server_connect {
-   my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+   my $servernodes = AnyEvent::MP::Global::find "eg_chat_server2"
       or return after 1, \&server_connect;
 
    print "\rconnecting...\n";
-
-   $server = $servernodes->[0];
 
    $client = port { print "\r  \r@_\n> " };
    mon $client, sub {
@@ -31,7 +29,7 @@ sub server_connect {
       &server_connect;
    };
 
-   snd $server, join => $client, $nick;
+   $server = spawn $servernodes->[0], "::client_connect", $client, $nick;
    mon $server, $client;
 }
 
@@ -40,7 +38,7 @@ server_connect;
 my $w = AE::io 0, 0, sub {
    chomp (my $line = <STDIN>);
    print "> ";
-   snd $server, privmsg => $nick, $line
+   snd $server, $line
      if $server;
 };
 

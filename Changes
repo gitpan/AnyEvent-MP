@@ -1,6 +1,13 @@
 Revision history for AnyEvent::MP
 
 TODO: intro
+TODO: auto-reconnect? when?
+
+0.8  Wed Aug 19 07:54:50 CEST 2009
+	- added AnyEvent::MP::Global service.
+	- support "package::" names as service names.
+        - many, many, many bugfixes and tweaks.
+
 0.7  Sat Aug 15 01:18:51 CEST 2009
 	- sorry, another major API simplification.
 	- greatly improved aemp configuration abilities.
