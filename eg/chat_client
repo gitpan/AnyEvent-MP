@@ -7,9 +7,9 @@ use common::sense;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
-my ($nick, $servernode) = @ARGV;
+my $nick = shift;
 
-initialise_node "slave/", $servernode;
+initialise_node "anon/";
 
 $| = 1;
 

@@ -11,9 +11,7 @@ SYNOPSIS
        $SELF      # receiving/own port id in rcv callbacks
 
        # initialise the node so it can send/receive messages
-       initialise_node;                  # -OR-
-       initialise_node "localhost:4040"; # -OR-
-       initialise_node "slave/", "localhost:4040"
+       initialise_node;
 
        # ports are message endpoints
 
@@ -41,8 +39,10 @@ SYNOPSIS
 CURRENT STATUS
        AnyEvent::MP            - stable API, should work
        AnyEvent::MP::Intro     - outdated
-       AnyEvent::MP::Kernel    - WIP
-       AnyEvent::MP::Transport - mostly stable
+       AnyEvent::MP::Kernel    - mostly stable
+       AnyEvent::MP::Global    - mostly stable
+       AnyEvent::MP::Node      - mostly stable, but internal anyways
+       AnyEvent::MP::Transport - mostly stable, but internal anyways
 
        stay tuned.
 
@@ -50,14 +50,12 @@ DESCRIPTION
     This module (-family) implements a simple message passing framework.
 
     Despite its simplicity, you can securely message other processes running
-    on the same or other hosts.
+    on the same or other hosts, and you can supervise entities remotely.
 
     For an introduction to this module family, see the AnyEvent::MP::Intro
-    manual page.
+    manual page and the examples under eg/.
 
-    At the moment, this module family is severly broken and underdocumented,
-    so do not use. This was uploaded mainly to reserve the CPAN namespace -
-    stay tuned!
+    At the moment, this module family is a bit underdocumented.
 
 CONCEPTS
     port
@@ -65,184 +63,146 @@ CONCEPTS
         function).
 
         Ports allow you to register "rcv" handlers that can match all or
-        just some messages. Messages will not be queued.
+        just some messages. Messages send to ports will not be queued,
+        regardless of anything was listening for them or not.
 
-    port id - "noderef#portname"
-        A port ID is the concatenation of a noderef, a hash-mark ("#") as
+    port ID - "nodeid#portname"
+        A port ID is the concatenation of a node ID, a hash-mark ("#") as
         separator, and a port name (a printable string of unspecified
-        format). An exception is the the node port, whose ID is identical to
-        its node reference.
+        format).
 
     node
         A node is a single process containing at least one port - the node
-        port, which provides nodes to manage each other remotely, and to
+        port, which enables nodes to manage each other remotely, and to
         create new ports.
 
-        Nodes are either private (single-process only), slaves (connected to
-        a master node only) or public nodes (connectable from unrelated
-        nodes).
+        Nodes are either public (have one or more listening ports) or
+        private (no listening ports). Private nodes cannot talk to other
+        private nodes currently.
 
-    noderef - "host:port,host:port...", "id@noderef", "id"
-        A node reference is a string that either simply identifies the node
-        (for private and slave nodes), or contains a recipe on how to reach
-        a given node (for public nodes).
+    node ID - "[a-za-Z0-9_\-.:]+"
+        A node ID is a string that uniquely identifies the node within a
+        network. Depending on the configuration used, node IDs can look like
+        a hostname, a hostname and a port, or a random string. AnyEvent::MP
+        itself doesn't interpret node IDs in any way.
 
-        This recipe is simply a comma-separated list of "address:port" pairs
-        (for TCP/IP, other protocols might look different).
+    binds - "ip:port"
+        Nodes can only talk to each other by creating some kind of
+        connection to each other. To do this, nodes should listen on one or
+        more local transport endpoints - binds. Currently, only standard
+        "ip:port" specifications can be used, which specify TCP ports to
+        listen on.
 
-        Node references come in two flavours: resolved (containing only
-        numerical addresses) or unresolved (where hostnames are used instead
-        of addresses).
+    seeds - "host:port"
+        When a node starts, it knows nothing about the network. To teach the
+        node about the network it first has to contact some other node
+        within the network. This node is called a seed.
 
-        Before using an unresolved node reference in a message you first
-        have to resolve it.
+        Seeds are transport endpoint(s) of as many nodes as one wants. Those
+        nodes are expected to be long-running, and at least one of those
+        should always be available. When nodes run out of connections (e.g.
+        due to a network error), they try to re-establish connections to
+        some seednodes again to join the network.
+
+        Apart from being sued for seeding, seednodes are not special in any
+        way - every public node can be a seednode.
 
 VARIABLES/FUNCTIONS
     $thisnode = NODE / $NODE
-        The "NODE" function returns, and the $NODE variable contains the
-        noderef of the local node. The value is initialised by a call to
-        "initialise_node".
+        The "NODE" function returns, and the $NODE variable contains, the
+        node ID of the node running in the current process. This value is
+        initialised by a call to "initialise_node".
 
-    $noderef = node_of $port
-        Extracts and returns the noderef from a port ID or a noderef.
+    $nodeid = node_of $port
+        Extracts and returns the node ID from a port ID or a node ID.
 
-    initialise_node $noderef, $seednode, $seednode...
-    initialise_node "slave/", $master, $master...
-        Before a node can talk to other nodes on the network it has to
-        initialise itself - the minimum a node needs to know is it's own
-        name, and optionally it should know the noderefs of some other nodes
-        in the network.
+    initialise_node $profile_name
+        Before a node can talk to other nodes on the network (i.e. enter
+        "distributed mode") it has to initialise itself - the minimum a node
+        needs to know is its own name, and optionally it should know the
+        addresses of some other nodes in the network to discover other
+        nodes.
 
         This function initialises a node - it must be called exactly once
         (or never) before calling other AnyEvent::MP functions.
 
-        All arguments (optionally except for the first) are noderefs, which
-        can be either resolved or unresolved.
+        The first argument is a profile name. If it is "undef" or missing,
+        then the current nodename will be used instead (i.e. uname -n).
 
-        The first argument will be looked up in the configuration database
-        first (if it is "undef" then the current nodename will be used
-        instead) to find the relevant configuration profile (see aemp). If
-        none is found then the default configuration is used. The
-        configuration supplies additional seed/master nodes and can override
-        the actual noderef.
+        The function then looks up the profile in the aemp configuration
+        (see the aemp commandline utility).
 
-        There are two types of networked nodes, public nodes and slave
-        nodes:
+        If the profile specifies a node ID, then this will become the node
+        ID of this process. If not, then the profile name will be used as
+        node ID. The special node ID of "anon/" will be replaced by a random
+        node ID.
 
-        public nodes
-            For public nodes, $noderef (supplied either directly to
-            "initialise_node" or indirectly via a profile or the nodename)
-            must be a noderef (possibly unresolved, in which case it will be
-            resolved).
+        The next step is to look up the binds in the profile, followed by
+        binding aemp protocol listeners on all binds specified (it is
+        possible and valid to have no binds, meaning that the node cannot be
+        contacted form the outside. This means the node cannot talk to other
+        nodes that also have no binds, but it can still talk to all "normal"
+        nodes).
 
-            After resolving, the node will bind itself on all endpoints and
-            try to connect to all additional $seednodes that are specified.
-            Seednodes are optional and can be used to quickly bootstrap the
-            node into an existing network.
+        If the profile does not specify a binds list, then the node ID will
+        be treated as if it were of the form "host:port", which will be
+        resolved and used as binds list.
 
-        slave nodes
-            When the $noderef (either as given or overriden by the config
-            file) is the special string "slave/", then the node will become
-            a slave node. Slave nodes cannot be contacted from outside and
-            will route most of their traffic to the master node that they
-            attach to.
+        Lastly, the seeds list from the profile is passed to the
+        AnyEvent::MP::Global module, which will then use it to keep
+        connectivity with at least on of those seed nodes at any point in
+        time.
 
-            At least one additional noderef is required (either by
-            specifying it directly or because it is part of the
-            configuration profile): The node will try to connect to all of
-            them and will become a slave attached to the first node it can
-            successfully connect to.
-
-            Note that slave nodes cannot change their name, and
-            consequently, their master, so if the master goes down, the
-            slave node will not function well anymore until it can
-            re-establish conenciton to its master. This makes slave nodes
-            unsuitable for long-term nodes or fault-tolerant networks.
-
-        This function will block until all nodes have been resolved and, for
-        slave nodes, until it has successfully established a connection to a
-        master server.
-
-        All the seednodes will also be specially marked to automatically
-        retry connecting to them infinitely.
-
-        Example: become a public node listening on the guessed noderef, or
-        the one specified via "aemp" for the current node. This should be
+        Example: become a distributed node listening on the guessed noderef,
+        or the one specified via "aemp" for the current node. This should be
         the most common form of invocation for "daemon"-type nodes.
 
            initialise_node;
 
-        Example: become a slave node to any of the the seednodes specified
-        via "aemp". This form is often used for commandline clients.
+        Example: become an anonymous node. This form is often used for
+        commandline clients.
 
-           initialise_node "slave/";
+           initialise_node "anon/";
 
-        Example: become a slave node to any of the specified master servers.
-        This form is also often used for commandline clients.
-
-           initialise_node "slave/", "master1", "192.168.13.17", "mp.example.net";
-
-        Example: become a public node, and try to contact some well-known
-        master servers to become part of the network.
-
-           initialise_node undef, "master1", "master2";
-
-        Example: become a public node listening on port 4041.
-
-           initialise_node 4041;
-
-        Example: become a public node, only visible on localhost port 4044.
+        Example: become a distributed node. If there is no profile of the
+        given name, or no binds list was specified, resolve "localhost:4044"
+        and bind on the resulting addresses.
 
            initialise_node "localhost:4044";
-
-    $cv = resolve_node $noderef
-        Takes an unresolved node reference that may contain hostnames and
-        abbreviated IDs, resolves all of them and returns a resolved node
-        reference.
-
-        In addition to "address:port" pairs allowed in resolved noderefs,
-        the following forms are supported:
-
-        the empty string
-            An empty-string component gets resolved as if the default port
-            (4040) was specified.
-
-        naked port numbers (e.g. 1234)
-            These are resolved by prepending the local nodename and a colon,
-            to be further resolved.
-
-        hostnames (e.g. "localhost:1234", "localhost")
-            These are resolved by using AnyEvent::DNS to resolve them,
-            optionally looking up SRV records for the "aemp=4040" port, if
-            no port was specified.
 
     $SELF
         Contains the current port id while executing "rcv" callbacks or
         "psub" blocks.
 
-    SELF, %SELF, @SELF...
+    *SELF, SELF, %SELF, @SELF...
         Due to some quirks in how perl exports variables, it is impossible
-        to just export $SELF, all the symbols called "SELF" are exported by
+        to just export $SELF, all the symbols named "SELF" are exported by
         this module, but only $SELF is currently used.
 
     snd $port, type => @data
     snd $port, @msg
-        Send the given message to the given port ID, which can identify
-        either a local or a remote port, and must be a port ID.
+        Send the given message to the given port, which can identify either
+        a local or a remote port, and must be a port ID.
 
-        While the message can be about anything, it is highly recommended to
-        use a string as first element (a port ID, or some word that
-        indicates a request type etc.).
+        While the message can be almost anything, it is highly recommended
+        to use a string as first element (a port ID, or some word that
+        indicates a request type etc.) and to consist if only simple perl
+        values (scalars, arrays, hashes) - if you think you need to pass an
+        object, think again.
 
-        The message data effectively becomes read-only after a call to this
-        function: modifying any argument is not allowed and can cause many
-        problems.
+        The message data logically becomes read-only after a call to this
+        function: modifying any argument (or values referenced by them) is
+        forbidden, as there can be considerable time between the call to
+        "snd" and the time the message is actually being serialised - in
+        fact, it might never be copied as within the same process it is
+        simply handed to the receiving port.
 
         The type of data you can transfer depends on the transport protocol:
         when JSON is used, then only strings, numbers and arrays and hashes
         consisting of those are allowed (no objects). When Storable is used,
         then anything that Storable can serialise and deserialise is
-        allowed, and for the local node, anything can be passed.
+        allowed, and for the local node, anything can be passed. Best rely
+        only on the common denominator of these.
 
     $local_port = port
         Create a new local port object and returns its port ID. Initially it
@@ -329,24 +289,25 @@ VARIABLES/FUNCTIONS
               };
            };
 
-    $guard = mon $port, $cb->(@reason)
-    $guard = mon $port, $rcvport
-    $guard = mon $port
-    $guard = mon $port, $rcvport, @msg
+    $guard = mon $port, $cb->(@reason) # call $cb when $port dies
+    $guard = mon $port, $rcvport # kill $rcvport when $port dies
+    $guard = mon $port # kill $SELF when $port dies
+    $guard = mon $port, $rcvport, @msg # send a message when $port dies
         Monitor the given port and do something when the port is killed or
         messages to it were lost, and optionally return a guard that can be
         used to stop monitoring again.
 
         "mon" effectively guarantees that, in the absence of hardware
-        failures, that after starting the monitor, either all messages sent
-        to the port will arrive, or the monitoring action will be invoked
-        after possible message loss has been detected. No messages will be
-        lost "in between" (after the first lost message no further messages
-        will be received by the port). After the monitoring action was
-        invoked, further messages might get delivered again.
+        failures, after starting the monitor, either all messages sent to
+        the port will arrive, or the monitoring action will be invoked after
+        possible message loss has been detected. No messages will be lost
+        "in between" (after the first lost message no further messages will
+        be received by the port). After the monitoring action was invoked,
+        further messages might get delivered again.
 
-        Note that monitoring-actions are one-shot: once released, they are
-        removed and will not trigger again.
+        Note that monitoring-actions are one-shot: once messages are lost
+        (and a monitoring alert was raised), they are removed and will not
+        trigger again.
 
         In the first form (callback), the callback is simply called with any
         number of @reason elements (no @reason means that the port was
@@ -390,10 +351,11 @@ VARIABLES/FUNCTIONS
         Optionally returns a guard that will stop the monitoring.
 
         This function is useful when you create e.g. timers or other
-        watchers and want to free them when the port gets killed:
+        watchers and want to free them when the port gets killed (note the
+        use of "psub"):
 
           $port->rcv (start => sub {
-             my $timer; $timer = mon_guard $port, AE::timer 1, 1, sub {
+             my $timer; $timer = mon_guard $port, AE::timer 1, 1, psub {
                 undef $timer if 0.9 < rand;
              });
           });
@@ -402,10 +364,11 @@ VARIABLES/FUNCTIONS
         Kill the specified port with the given @reason.
 
         If no @reason is specified, then the port is killed "normally"
-        (linked ports will not be kileld, or even notified).
+        (ports monitoring other ports will not necessarily die because a
+        port dies "normally").
 
         Otherwise, linked ports get killed with the same reason (second form
-        of "mon", see below).
+        of "mon", see above).
 
         Runtime errors while evaluating "rcv" callbacks or inside "psub"
         blocks will be reported as reason "die => $@".
@@ -417,12 +380,13 @@ VARIABLES/FUNCTIONS
         Creates a port on the node $node (which can also be a port ID, in
         which case it's the node where that port resides).
 
-        The port ID of the newly created port is return immediately, and it
-        is permissible to immediately start sending messages or monitor the
-        port.
+        The port ID of the newly created port is returned immediately, and
+        it is possible to immediately start sending messages or to monitor
+        the port.
 
-        After the port has been created, the init function is called. This
-        function must be a fully-qualified function name (e.g.
+        After the port has been created, the init function is called on the
+        remote node, in the same context as a "rcv" callback. This function
+        must be a fully-qualified function name (e.g.
         "MyApp::Chat::Server::init"). To specify a function in the main
         program, use "::name".
 
@@ -434,10 +398,10 @@ VARIABLES/FUNCTIONS
         The init function is then called with the newly-created port as
         context object ($SELF) and the @initdata values as arguments.
 
-        A common idiom is to pass your own port, monitor the spawned port,
-        and in the init function, monitor the original port. This two-way
-        monitoring ensures that both ports get cleaned up when there is a
-        problem.
+        A common idiom is to pass a local port, immediately monitor the
+        spawned port, and in the remote init function, immediately monitor
+        the passed local port. This two-way monitoring ensures that both
+        ports get cleaned up when there is a problem.
 
         Example: spawn a chat server port on $othernode.
 
@@ -461,7 +425,9 @@ VARIABLES/FUNCTIONS
         Either sends the given message, or call the given callback, after
         the specified number of seconds.
 
-        This is simply a utility function that come sin handy at times.
+        This is simply a utility function that comes in handy at times - the
+        AnyEvent::MP author is not convinced of the wisdom of having it,
+        though, so it may go away in the future.
 
 AnyEvent::MP vs. Distributed Erlang
     AnyEvent::MP got lots of its ideas from distributed Erlang (Erlang node
@@ -476,15 +442,12 @@ AnyEvent::MP vs. Distributed Erlang
 
     Despite the similarities, there are also some important differences:
 
-    *   Node references contain the recipe on how to contact them.
+    *   Node IDs are arbitrary strings in AEMP.
 
         Erlang relies on special naming and DNS to work everywhere in the
-        same way. AEMP relies on each node knowing it's own address(es),
-        with convenience functionality.
-
-        This means that AEMP requires a less tightly controlled environment
-        at the cost of longer node references and a slightly higher
-        management overhead.
+        same way. AEMP relies on each node somehow knowing its own
+        address(es) (e.g. by configuraiton or DNS), but will otherwise
+        discover other odes itself.
 
     *   Erlang has a "remote ports are like local ports" philosophy, AEMP
         uses "local ports are like remote ports".
@@ -525,20 +488,10 @@ AnyEvent::MP vs. Distributed Erlang
         messages a, b, and c, and the other side only receives messages a
         and c).
 
-        AEMP guarantees correct ordering, and the guarantee that there are
-        no holes in the message sequence.
-
-    *   In Erlang, processes can be declared dead and later be found to be
-        alive.
-
-        In Erlang it can happen that a monitored process is declared dead
-        and linked processes get killed, but later it turns out that the
-        process is still alive - and can receive messages.
-
-        In AEMP, when port monitoring detects a port as dead, then that port
-        will eventually be killed - it cannot happen that a node detects a
-        port as dead and then later sends messages to it, finding it is
-        still alive.
+        AEMP guarantees correct ordering, and the guarantee that after one
+        message is lost, all following ones sent to the same port are lost
+        as well, until monitoring raises an error, so there are no silent
+        "holes" in the message sequence.
 
     *   Erlang can send messages to the wrong port, AEMP does not.
 
@@ -553,19 +506,21 @@ AnyEvent::MP vs. Distributed Erlang
     *   Erlang uses unprotected connections, AEMP uses secure authentication
         and can use TLS.
 
-        AEMP can use a proven protocol - SSL/TLS - to protect connections
-        and securely authenticate nodes.
+        AEMP can use a proven protocol - TLS - to protect connections and
+        securely authenticate nodes.
 
     *   The AEMP protocol is optimised for both text-based and binary
         communications.
 
         The AEMP protocol, unlike the Erlang protocol, supports both
-        language-independent text-only protocols (good for debugging) and
-        binary, language-specific serialisers (e.g. Storable).
+        programming language independent text-only protocols (good for
+        debugging) and binary, language-specific serialisers (e.g.
+        Storable). By default, unless TLS is used, the protocol is actually
+        completely text-based.
 
         It has also been carefully designed to be implementable in other
         languages with a minimum of work while gracefully degrading
-        fucntionality to make the protocol simple.
+        functionality to make the protocol simple.
 
     *   AEMP has more flexible monitoring options than Erlang.
 
@@ -578,39 +533,41 @@ AnyEvent::MP vs. Distributed Erlang
     *   Erlang tries to hide remote/local connections, AEMP does not.
 
         Monitoring in Erlang is not an indicator of process death/crashes,
-        as linking is (except linking is unreliable in Erlang).
+        in the same way as linking is (except linking is unreliable in
+        Erlang).
 
         In AEMP, you don't "look up" registered port names or send to named
         ports that might or might not be persistent. Instead, you normally
-        spawn a port on the remote node. The init function monitors the you,
-        and you monitor the remote port. Since both monitors are local to
-        the node, they are much more reliable.
+        spawn a port on the remote node. The init function monitors you, and
+        you monitor the remote port. Since both monitors are local to the
+        node, they are much more reliable (no need for "spawn_link").
 
         This also saves round-trips and avoids sending messages to the wrong
         port (hard to do in Erlang).
 
 RATIONALE
-    Why strings for ports and noderefs, why not objects?
+    Why strings for port and node IDs, why not objects?
         We considered "objects", but found that the actual number of methods
-        thatc an be called are very low. Since port IDs and noderefs travel
+        that can be called are quite low. Since port and node IDs travel
         over the network frequently, the serialising/deserialising would add
-        lots of overhead, as well as having to keep a proxy object.
+        lots of overhead, as well as having to keep a proxy object
+        everywhere.
 
         Strings can easily be printed, easily serialised etc. and need no
         special procedures to be "valid".
 
-        And a a miniport consists of a single closure stored in a global
-        hash - it can't become much cheaper.
+        And as a result, a miniport consists of a single closure stored in a
+        global hash - it can't become much cheaper.
 
-    Why favour JSON, why not real serialising format such as Storable?
+    Why favour JSON, why not a real serialising format such as Storable?
         In fact, any AnyEvent::MP node will happily accept Storable as
         framing format, but currently there is no way to make a node use
-        Storable by default.
+        Storable by default (although all nodes will accept it).
 
         The default framing protocol is JSON because a) JSON::XS is many
         times faster for small messages and b) most importantly, after years
         of experience we found that object serialisation is causing more
-        problems than it gains: Just like function calls, objects simply do
+        problems than it solves: Just like function calls, objects simply do
         not travel easily over the network, mostly because they will always
         be a copy, so you always have to re-think your design.
 
@@ -619,6 +576,13 @@ RATIONALE
         efficient.
 
 SEE ALSO
+    AnyEvent::MP::Intro - a gentle introduction.
+
+    AnyEvent::MP::Kernel - more, lower-level, stuff.
+
+    AnyEvent::MP::Global - network maintainance and port groups, to find
+    your applications.
+
     AnyEvent.
 
 AUTHOR

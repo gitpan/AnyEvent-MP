@@ -8,8 +8,8 @@ AnyEvent::MP::Transport - actual transport protocol handler
 
 =head1 DESCRIPTION
 
-This implements the actual transport protocol for MP (it represents a
-single link), most of which is considered an implementation detail.
+This module implements (and documents) the actual transport protocol for
+AEMP.
 
 See the "PROTOCOL" section below if you want to write another client for
 this protocol.
@@ -41,7 +41,7 @@ use AnyEvent::MP::Config ();
 
 our $PROTOCOL_VERSION = 0;
 
-=item $listener = mp_listener $host, $port, <constructor-args>, $cb->($transport)
+=item $listener = mp_listener $host, $port, <constructor-args>
 
 Creates a listener on the given host/port using
 C<AnyEvent::Socket::tcp_server>.
@@ -53,18 +53,18 @@ Defaults for peerhost, peerport and fh are provided.
 =cut
 
 sub mp_server($$@) {
-   my $cb = pop;
    my ($host, $port, @args) = @_;
 
    AnyEvent::Socket::tcp_server $host, $port, sub {
       my ($fh, $host, $port) = @_;
 
-      $cb->(new AnyEvent::MP::Transport
+      my $tp = new AnyEvent::MP::Transport
          fh       => $fh,
          peerhost => $host,
          peerport => $port,
          @args,
-      );
+      ;
+      $tp->{keepalive} = $tp;
    }
 }
 
@@ -121,8 +121,8 @@ sub mp_connect {
 sub LATENCY() { 3 } # assumed max. network latency
 
 our @FRAMINGS = qw(json storable); # the framing types we accept and send, in order of preference
-our @AUTH_SND = qw(hmac_md6_64_256); # auth types we send
-our @AUTH_RCV = (@AUTH_SND, qw(cleartext)); # auth types we accept
+our @AUTH_SND = qw(tls_md6_64_256 hmac_md6_64_256); # auth types we send
+our @AUTH_RCV = (@AUTH_SND, qw(tls_anon cleartext)); # auth types we accept
 
 #AnyEvent::Handle::register_write_type mp_record => sub {
 #};
@@ -141,21 +141,21 @@ sub new {
 
       my $latency = $config->{network_latency} || LATENCY;
 
-      $arg{secret} = $config->{secret}
-         unless exists $arg{secret};
+      $self->{secret} = $config->{secret}
+         unless exists $self->{secret};
 
-      $arg{timeout} = $config->{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT
-         unless exists $arg{timeout};
+      $self->{timeout} = $config->{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT
+         unless exists $self->{timeout};
 
-      $arg{timeout} -= $latency;
+      $self->{timeout} -= $latency;
 
-      $arg{timeout} = 1 + $latency
-         if $arg{timeout} < 1 + $latency;
+      $self->{timeout} = 1 + $latency
+         if $self->{timeout} < 1 + $latency;
 
-      my $secret = $arg{secret};
+      my $secret = $self->{secret};
 
       if (exists $config->{cert}) {
-         $arg{tls_ctx} = {
+         $self->{tls_ctx} = {
             sslv2   => 0,
             sslv3   => 0,
             tlsv1   => 1,
@@ -167,24 +167,24 @@ sub new {
       }
 
       $self->{hdl} = new AnyEvent::Handle
-         fh       => delete $arg{fh},
+         fh       => delete $self->{fh},
          autocork => 1,
          no_delay => 1,
          on_error => sub {
             $self->error ($_[2]);
          },
          rtimeout => $latency,
-         peername => delete $arg{peername},
+         peername => delete $self->{peername},
       ;
 
       my $greeting_kv = $self->{greeting} ||= {};
 
-      $self->{local_node} = $AnyEvent::MP::Kernel::NODE;
+      $self->{local_node} ||= $AnyEvent::MP::Kernel::NODE;
 
-      $greeting_kv->{"tls"}    = "1.0" if $arg{tls_ctx};
+      $greeting_kv->{tls}      = "1.0" if $self->{tls_ctx};
       $greeting_kv->{provider} = "AE-$AnyEvent::MP::Kernel::VERSION";
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
-      $greeting_kv->{timeout}  = $arg{timeout};
+      $greeting_kv->{timeout}  = $self->{timeout};
 
       # send greeting
       my $lgreeting1 = "aemp;$PROTOCOL_VERSION"
@@ -208,31 +208,14 @@ sub new {
             return $self->error ("unparsable greeting");
          } elsif ($version != $PROTOCOL_VERSION) {
             return $self->error ("version mismatch (we: $PROTOCOL_VERSION, they: $version)");
+         } elsif ($rnode eq $self->{local_node}) {
+            AnyEvent::MP::Global::avoid_seed ($self->{seed})
+               if exists $self->{seed};
+
+            return $self->error ("I refuse to talk to myself");
+         } elsif ($AnyEvent::MP::Kernel::NODE{$rnode} && $AnyEvent::MP::Kernel::NODE{$rnode}{transport}) {
+            return $self->error ("$rnode already connected, not connecting again.");
          }
-
-         my $s_auth;
-         for my $auth_ (split /,/, $auths) {
-            if (grep $auth_ eq $_, @AUTH_SND) {
-               $s_auth = $auth_;
-               last;
-            }
-         }
-
-         defined $s_auth
-            or return $self->error ("$auths: no common auth type supported");
-
-         die unless $s_auth eq "hmac_md6_64_256"; # hardcoded atm.
-
-         my $s_framing;
-         for my $framing_ (split /,/, $framings) {
-            if (grep $framing_ eq $_, @FRAMINGS) {
-               $s_framing = $framing_;
-               last;
-            }
-         }
-
-         defined $s_framing
-            or return $self->error ("$framings: no common framing method supported");
 
          $self->{remote_node} = $rnode;
 
@@ -248,18 +231,50 @@ sub new {
             "$lgreeting1\012$lgreeting2" ne "$rgreeting1\012$rgreeting2" # echo attack?
                or return $self->error ("authentication error, echo attack?");
 
+            my $tls = $self->{tls_ctx} && 1 == int $self->{remote_greeting}{tls};
+
+            my $s_auth;
+            for my $auth_ (split /,/, $auths) {
+               if (grep $auth_ eq $_, @AUTH_SND and ($auth_ !~ /^tls_/ or $tls)) {
+                  $s_auth = $auth_;
+                  last;
+               }
+            }
+
+            defined $s_auth
+               or return $self->error ("$auths: no common auth type supported");
+
+            my $s_framing;
+            for my $framing_ (split /,/, $framings) {
+               if (grep $framing_ eq $_, @FRAMINGS) {
+                  $s_framing = $framing_;
+                  last;
+               }
+            }
+
+            defined $s_framing
+               or return $self->error ("$framings: no common framing method supported");
+
             my $key;
             my $lauth;
 
-            if ($self->{tls_ctx} and 1 == int $self->{remote_greeting}{tls}) {
+            if ($tls) {
                $self->{tls} = $lgreeting2 lt $rgreeting2 ? "connect" : "accept";
                $self->{hdl}->starttls ($self->{tls}, $self->{tls_ctx});
-               $s_auth = "tls";
-               $lauth = "";
+
+               $lauth =
+                  $s_auth eq "tls_anon"       ? ""
+                : $s_auth eq "tls_md6_64_256" ? Digest::MD6::md6_hex "$lgreeting1\012$lgreeting2\012$rgreeting1\012$rgreeting2\012"
+                : return $self->error ("$s_auth: fatal, selected unsupported snd auth method");
+
             } elsif (length $secret) {
+               return $self->error ("$s_auth: fatal, selected unsupported snd auth method")
+                  unless $s_auth eq "hmac_md6_64_256"; # hardcoded atm.
+
                $key = Digest::MD6::md6 $secret;
                # we currently only support hmac_md6_64_256
                $lauth = Digest::HMAC_MD6::hmac_md6_hex $key, "$lgreeting1\012$lgreeting2\012$rgreeting1\012$rgreeting2\012", 64, 256;
+
             } else {
                return $self->error ("unable to handshake TLS and no shared secret configured");
             }
@@ -275,8 +290,9 @@ sub new {
                my $rauth =
                   $auth_method eq "hmac_md6_64_256" ? Digest::HMAC_MD6::hmac_md6_hex $key, "$rgreeting1\012$rgreeting2\012$lgreeting1\012$lgreeting2\012", 64, 256
                 : $auth_method eq "cleartext"       ? unpack "H*", $secret
-                : $auth_method eq "tls"             ? ($self->{tls} ? "" : "\012\012") # \012\012 never matches
-                : return $self->error ("$auth_method: fatal, selected unsupported auth method");
+                : $auth_method eq "tls_anon"        ? ($tls ? "" : "\012\012") # \012\012 never matches
+                : $auth_method eq "tls_md6_64_256"  ? ($tls ? Digest::MD6::md6_hex "$rgreeting1\012$rgreeting2\012$lgreeting1\012$lgreeting2\012" : "\012\012")
+                : return $self->error ("$auth_method: fatal, selected unsupported rcv auth method");
 
                if ($rauth2 ne $rauth) {
                   return $self->error ("authentication failure/shared secret mismatch");
@@ -288,7 +304,7 @@ sub new {
                my $queue = delete $self->{queue}; # we are connected
 
                $self->{hdl}->rtimeout ($self->{remote_greeting}{timeout});
-               $self->{hdl}->wtimeout ($arg{timeout} - LATENCY);
+               $self->{hdl}->wtimeout ($self->{timeout} - LATENCY);
                $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
 
                $self->connected;
@@ -318,7 +334,11 @@ sub new {
 sub error {
    my ($self, $msg) = @_;
 
-   $self->{node}->transport_error (transport_error => $self->{node}{noderef}, $msg)
+   delete $self->{keepalive};
+
+#   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} $msg");#d#
+
+   $self->{node}->transport_error (transport_error => $self->{node}{id}, $msg)
       if $self->{node} && $self->{node}{transport} == $self;
 
    (delete $self->{release})->()
@@ -331,8 +351,12 @@ sub error {
 sub connected {
    my ($self) = @_;
 
+   delete $self->{keepalive};
+
    (delete $self->{release})->()
       if exists $self->{release};
+
+   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} connected as $self->{remote_node}");
 
    my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
    Scalar::Util::weaken ($self->{node} = $node);
@@ -345,6 +369,9 @@ sub send {
 
 sub destroy {
    my ($self) = @_;
+
+   (delete $self->{release})->()
+      if exists $self->{release};
 
    $self->{hdl}->destroy
       if $self->{hdl};
@@ -360,11 +387,11 @@ sub DESTROY {
 
 =head1 PROTOCOL
 
-The protocol is relatively simple, and consists of three phases which are
-symmetrical for both sides: greeting (followed by optionally switching to
-TLS mode), authentication and packet exchange.
+The AEMP protocol is relatively simple, and consists of three phases which
+are symmetrical for both sides: greeting (followed by optionally switching
+to TLS mode), authentication and packet exchange.
 
-the protocol is designed to allow both full-text and binary streams.
+The protocol is designed to allow both full-text and binary streams.
 
 The greeting consists of two text lines that are ended by either an ASCII
 CR LF pair, or a single ASCII LF (recommended).
@@ -372,19 +399,20 @@ CR LF pair, or a single ASCII LF (recommended).
 =head2 GREETING
 
 All the lines until after authentication must not exceed 4kb in length,
-including delimiter. Afterwards there is no limit on the packet size that
-can be received.
+including line delimiter. Afterwards there is no limit on the packet size
+that can be received.
 
 =head3 First Greeting Line
 
 Example:
 
-   aemp;0;fec.4a7720fc;127.0.0.1:1235,[::1]:1235;hmac_md6_64_256;json,storable;provider=AE-0.0
+   aemp;0;rain;tls_md6_64_256,hmac_md6_64_256,tls_anon,cleartext;json,storable;timeout=12;peeraddr=10.0.0.1:48082
 
 The first line contains strings separated (not ended) by C<;>
-characters. The first even ixtrings are fixed by the protocol, the
+characters. The first five strings are fixed by the protocol, the
 remaining strings are C<KEY=VALUE> pairs. None of them may contain C<;>
-characters themselves.
+characters themselves (when escaping is needed, use C<%3b> to represent
+C<;> and C<%25> to represent C<%>)-
 
 The fixed strings are:
 
@@ -392,7 +420,7 @@ The fixed strings are:
 
 =item protocol identification
 
-The constant C<aemp> to identify the protocol.
+The constant C<aemp> to identify this protocol.
 
 =item protocol version
 
@@ -400,24 +428,23 @@ The protocol version supported by this end, currently C<0>. If the
 versions don't match then no communication is possible. Minor extensions
 are supposed to be handled through additional key-value pairs.
 
-=item the node endpoint descriptors
+=item the node ID
 
-for public nodes, this is a comma-separated list of protocol endpoints,
-i.e., the noderef. For slave nodes, this is a unique identifier of the
-form C<slave/nonce>.
+This is the node ID of the connecting node.
 
 =item the acceptable authentication methods
 
 A comma-separated list of authentication methods supported by the
 node. Note that AnyEvent::MP supports a C<hex_secret> authentication
-method that accepts a cleartext password (hex-encoded), but will not use
-this auth method itself.
+method that accepts a clear-text password (hex-encoded), but will not use
+this authentication method itself.
 
-The receiving side should choose the first auth method it supports.
+The receiving side should choose the first authentication method it
+supports.
 
 =item the acceptable framing formats
 
-A comma-separated list of packet encoding/framign formats understood. The
+A comma-separated list of packet encoding/framing formats understood. The
 receiving side should choose the first framing format it supports for
 sending packets (which might be different from the format it has to accept).
 
@@ -428,6 +455,13 @@ pairs are known at this time:
 
 =over 4
 
+=item timeout=<seconds>
+
+The amount of time after which this node should be detected as dead unless
+some data has been received. The node is responsible to send traffic
+reasonably more often than this interval (such as every timeout minus five
+seconds).
+
 =item provider=<module-version>
 
 The software provider for this implementation. For AnyEvent::MP, this is
@@ -435,20 +469,12 @@ C<AE-0.0> or whatever version it currently is at.
 
 =item peeraddr=<host>:<port>
 
-The peer address (socket address of the other side) as seen locally, in the same format
-as noderef endpoints.
+The peer address (socket address of the other side) as seen locally.
 
 =item tls=<major>.<minor>
 
 Indicates that the other side supports TLS (version should be 1.0) and
 wishes to do a TLS handshake.
-
-=item timeout=<seconds>
-
-The amount of time after which this node should be detected as dead unless
-some data has been received. The node is responsible to send traffic
-reasonably more often than this interval (such as every timeout minus five
-seconds).
 
 =back
 
@@ -463,14 +489,15 @@ characters.
 I<< The two nonces B<must> be different, and an aemp implementation
 B<must> check and fail when they are identical >>.
 
-Example of a nonce line:
+Example of a nonce line (yes, it's random-looking because it is random
+data):
 
-   p/I122ql7kJR8lumW3lXlXCeBnyDAvz8NQo3x5IFowE4
+   2XYhdG7/O6epFa4wuP0ujAEx1rXYWRcOypjUYK7eF6yWAQr7gwIN9m/2+mVvBrTPXz5GJDgfGm9d8QRABAbmAP/s
 
 =head2 TLS handshake
 
 I<< If, after the handshake, both sides indicate interest in TLS, then the
-connection B<must> use TLS, or fail. >>
+connection B<must> use TLS, or fail to continue. >>
 
 Both sides compare their nonces, and the side who sent the lower nonce
 value ("string" comparison on the raw octet values) becomes the client,
@@ -491,6 +518,10 @@ The three fixed strings are:
 
 This must be one of the methods offered by the other side in the greeting.
 
+Note that all methods starting with C<tls_> are only valid I<iff> TLS was
+successfully handshaked (and to be secure the implementation must enforce
+this).
+
 The currently supported authentication methods are:
 
 =over 4
@@ -498,20 +529,24 @@ The currently supported authentication methods are:
 =item cleartext
 
 This is simply the shared secret, lowercase-hex-encoded. This method is of
-course very insecure, unless TLS is used, which is why this module will
-accept, but not generate, cleartext auth replies.
+course very insecure if TLS is not used (and not completely secure even
+if TLS is used), which is why this module will accept, but not generate,
+cleartext auth replies.
 
 =item hmac_md6_64_256
 
-This method uses an MD6 HMAC with 64 bit blocksize and 256 bit hash. First, the shared secret
-is hashed with MD6:
+This method uses an MD6 HMAC with 64 bit blocksize and 256 bit hash, and
+requires a shared secret. It is the preferred auth method when a shared
+secret is available.
+
+First, the shared secret is hashed with MD6:
 
    key = MD6 (secret)
 
 This secret is then used to generate the "local auth reply", by taking
 the two local greeting lines and the two remote greeting lines (without
 line endings), appending \012 to all of them, concatenating them and
-calculating the MD6 HMAC with the key.
+calculating the MD6 HMAC with the key:
 
    lauth = HMAC_MD6 key, "lgreeting1\012lgreeting2\012rgreeting1\012rgreeting2\012"
 
@@ -525,13 +560,32 @@ and remote greeting lines swapped:
 
 This is the token that is expected from the other side.
 
-=item tls
+=item tls_anon
 
-This type is only valid iff TLS was enabled and the TLS handshake
+This type is only valid I<iff> TLS was enabled and the TLS handshake
 was successful. It has no authentication data, as the server/client
 certificate was successfully verified.
 
-Implementations supporting TLS I<must> accept this authentication type.
+This authentication type is somewhat insecure, as it allows a
+man-in-the-middle attacker to change some of the connection parameters
+(such as the framing format), although there is no known attack that
+exploits this in a way that is worse than just denying the service.
+
+By default, this implementation accepts but never generates this auth
+reply.
+
+=item tls_md6_64_256
+
+This type is only valid I<iff> TLS was enabled and the TLS handshake was
+successful.
+
+This authentication type simply calculates:
+
+   lauth = MD6 "rgreeting1\012rgreeting2\012lgreeting1\012lgreeting2\012"
+
+and lowercase-hex encodes the result and sends it as authentication
+data. No shared secret is required (authentication is done by TLS). The
+checksum exists only to make tinkering with the greeting hard.
 
 =back
 
@@ -543,7 +597,8 @@ above.
 =item the framing protocol chosen
 
 This must be one of the framing protocols offered by the other side in the
-greeting. Each side must accept the choice of the other side.
+greeting. Each side must accept the choice of the other side, and generate
+packets in the format it chose itself.
 
 =back
 
@@ -562,13 +617,19 @@ This is an actual protocol dump of a handshake, followed by a single data
 packet. The greater than/less than lines indicate the direction of the
 transfer only.
 
-   > aemp;0;nndKd+gn;10.0.0.1:4040;hmac_md6_64_256,cleartext;json,storable;provider=AE-0.0;peeraddr=127.0.0.1:1235
-   > sRG8bbc4TDbkpvH8FTP4HBs87OhepH6VuApoZqXXskuG
-   < aemp;0;nmpKd+gh;127.0.0.1:1235,[::1]:1235;hmac_md6_64_256,cleartext;json,storable;provider=AE-0.0;peeraddr=127.0.0.1:58760
-   < dCEUcL/LJVSTJcx8byEsOzrwhzJYOq+L3YcopA5T6EAo
-   > hmac_md6_64_256;9513d4b258975accfcb2ab7532b83690e9c119a502c612203332a591c7237788;json
-   < hmac_md6_64_256;0298d6ba2240faabb2b2e881cf86b97d70a113ca74a87dc006f9f1e9d3010f90;json
-   > ["","lookup","pinger","10.0.0.1:4040#nndKd+gn.a","resolved"]
+   > aemp;0;anon/57Cs1CggVJjzYaQp13XXg4;tls_md6_64_256,hmac_md6_64_256,tls_anon,cleartext;json,storable;provider=AE-0.8;timeout=12;peeraddr=10.0.0.17:4040
+   > yLgdG1ov/02shVkVQer3wzeuywZK+oraTdEQBmIqWHaegxSGDG4g+HqogLQbvdypFOsoDWJ1Sh4ImV4DMhvUBwTK
+
+   < aemp;0;ruth;tls_md6_64_256,hmac_md6_64_256,tls_anon,cleartext;json,storable;provider=AE-0.8;timeout=12;peeraddr=10.0.0.1:37108
+   < +xMQXP8ElfNmuvEhsmcp+s2wCJOuQAsPxSg3d2Ewhs6gBnJz+ypVdWJ/wAVrXqlIJfLeVS/CBy4gEGkyWHSuVb1L
+
+   > hmac_md6_64_256;5ad913855742ae5a03a5aeb7eafa4c78629de136bed6acd73eea36c9e98df44a;json
+
+   < hmac_md6_64_256;84cd590976f794914c2ca26dac3a207a57a6798b9171289c114de07cf0c20401;json
+   < ["","AnyEvent::MP::_spawn","57Cs1CggVJjzYaQp13XXg4.c","AnyEvent::MP::Global::connect",0,"anon/57Cs1CggVJjzYaQp13XXg4"]
+   ...
+
+The shared secret in use was C<8ugxrtw6H5tKnfPWfaSr4HGhE8MoJXmzTT1BWq7sLutNcD0IbXprQlZjIbl7MBKoeklG3IEfY9GlJthC0pENzk>.
 
 =head1 SEE ALSO
 

@@ -1,7 +1,15 @@
 Revision history for AnyEvent::MP
 
-TODO: intro
-TODO: auto-reconnect? when?
+TODO: node-down = node-nuke
+TODO: memleaks?
+
+0.9  Sat Aug 29 18:47:45 CEST 2009
+	- tutorial was updated to reflect the current API, but
+          doe snot touch monitoring yet.
+	- got rid of noderefs and slave nodes entirely, introduce
+          free-text node identifiers and anonymous nodes.
+        - document security issues with tls_anon method and introduce
+          optional tls_md6_64_256 method.
 
 0.8  Wed Aug 19 07:54:50 CEST 2009
 	- added AnyEvent::MP::Global service.

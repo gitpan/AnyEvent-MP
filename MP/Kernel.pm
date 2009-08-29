@@ -13,7 +13,7 @@ exposed through higher level interfaces such as L<AnyEvent::MP> and
 L<Coro::MP>.
 
 This module is mainly of interest when knowledge about connectivity,
-connected nodes etc. are needed.
+connected nodes etc. is sought.
 
 =head1 GLOBALS AND FUNCTIONS
 
@@ -35,10 +35,10 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.8';
+our $VERSION = '0.9';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
-   connect_node add_node load_func snd_to_func snd_on eval_on
+   add_node load_func snd_to_func snd_on eval_on
 
    NODE $NODE node_of snd kil
    port_is_local
@@ -54,8 +54,11 @@ our $MONITOR_TIMEOUT  = 15; # fail monitoring after this time
 
 =item $AnyEvent::MP::Kernel::WARN->($level, $msg)
 
-This value is called with an error or warning message, when e.g. a connection
-could not be created, authorisation failed and so on.
+This value is called with an error or warning message, when e.g. a
+connection could not be created, authorisation failed and so on.
+
+It I<must not> block or send messages -queue it and use an idle watcher if
+you need to do any of these things.
 
 C<$level> sould be C<0> for messages ot be logged always, C<1> for
 unexpected messages and errors, C<2> for warnings, C<7> for messages about
@@ -110,7 +113,7 @@ sub nonce($) {
    $nonce
 }
 
-sub asciibits($) {
+sub alnumbits($) {
    my $data = $_[0];
 
    if (eval "use Math::GMP 2.05; 1") {
@@ -129,42 +132,24 @@ sub asciibits($) {
 }
 
 sub gen_uniq {
-   asciibits pack "wNa*", $$, time, nonce 2
+   alnumbits pack "wNa*", $$, time, nonce 2
 }
 
-=item $AnyEvent::MP::Kernel::PUBLIC
+our $CONFIG; # this node's configuration
 
-A boolean indicating whether this is a full/public node, which can create
-and accept direct connections form othe rnodes.
-
-=item $AnyEvent::MP::Kernel::SLAVE
-
-A boolean indicating whether this node is a slave node, i.e. does most of it's
-message sending/receiving through some master node.
-
-=item $AnyEvent::MP::Kernel::MASTER
-
-Defined only in slave mode, in which cas eit contains the noderef of the
-master node.
-
-=cut
-
-our $PUBLIC = 0;
-our $SLAVE  = 0;
-our $MASTER; # master noderef when $SLAVE
-
-our $NODE   = asciibits nonce 16;
-our $RUNIQ  = $NODE; # remote uniq value
+our $RUNIQ  = alnumbits nonce 16;; # remote uniq value
 our $UNIQ   = gen_uniq; # per-process/node unique cookie
+our $NODE   = "anon/$RUNIQ";
 our $ID     = "a";
 
 our %NODE; # node id to transport mapping, or "undef", for local node
 our (%PORT, %PORT_DATA); # local ports
 
-our %RMON; # local ports monitored by remote nodes ($RMON{noderef}{portid} == cb)
+our %RMON; # local ports monitored by remote nodes ($RMON{nodeid}{portid} == cb)
 our %LMON; # monitored _local_ ports
 
 our %LISTENER;
+our $LISTENER; # our listeners, as arrayref
 
 our $SRCNODE; # holds the sending node during _inject
 
@@ -173,9 +158,9 @@ sub NODE() {
 }
 
 sub node_of($) {
-   my ($noderef, undef) = split /#/, $_[0], 2;
+   my ($node, undef) = split /#/, $_[0], 2;
 
-   $noderef
+   $node
 }
 
 BEGIN {
@@ -185,58 +170,24 @@ BEGIN {
 }
 
 sub _inject {
-   warn "RCV $SRCNODE->{noderef} -> @_\n" if TRACE && @_;#d#
+   warn "RCV $SRCNODE->{id} -> " . (JSON::XS->new->encode (\@_)) . "\n" if TRACE && @_;#d#
    &{ $PORT{+shift} or return };
 }
 
+# this function adds a node-ref, so you can send stuff to it
+# it is basically the central routing component.
 sub add_node {
-   my ($noderef) = @_;
+   my ($node) = @_;
 
-   return $NODE{$noderef}
-      if exists $NODE{$noderef};
-
-   for (split /,/, $noderef) {
-      return $NODE{$noderef} = $NODE{$_}
-         if exists $NODE{$_};
-   }
-
-   # new node, check validity
-   my $node;
-
-   if ($noderef =~ /^slave\/.+$/) {
-      $node = new AnyEvent::MP::Node::Indirect $noderef;
-
-   } else {
-      for (split /,/, $noderef) {
-         my ($host, $port) = AnyEvent::Socket::parse_hostport $_
-            or Carp::croak "$noderef: not a resolved node reference ('$_' not parsable)";
-
-         $port > 0
-            or Carp::croak "$noderef: not a resolved node reference ('$_' contains non-numeric port)";
-
-         AnyEvent::Socket::parse_address $host
-            or Carp::croak "$noderef: not a resolved node reference ('$_' contains unresolved address)";
-      }
-
-      $node = new AnyEvent::MP::Node::Direct $noderef;
-   }
-
-   $NODE{$_} = $node
-      for $noderef, split /,/, $noderef;
-
-   $node
-}
-
-sub connect_node {
-   &add_node->connect;
+   $NODE{$node} ||= new AnyEvent::MP::Node::Direct $node
 }
 
 sub snd(@) {
-   my ($noderef, $portid) = split /#/, shift, 2;
+   my ($nodeid, $portid) = split /#/, shift, 2;
 
-   warn "SND $noderef <- $portid @_\n" if TRACE;#d#
+   warn "SND $nodeid <- " . (JSON::XS->new->encode (\@_)) . "\n" if TRACE && @_;#d#
 
-   ($NODE{$noderef} || add_node $noderef)
+   ($NODE{$nodeid} || add_node $nodeid)
       ->{send} (["$portid", @_]);
 }
 
@@ -247,24 +198,24 @@ Returns true iff the port is a local port.
 =cut
 
 sub port_is_local($) {
-   my ($noderef, undef) = split /#/, $_[0], 2;
+   my ($nodeid, undef) = split /#/, $_[0], 2;
 
-   $NODE{$noderef} == $NODE{""}
+   $NODE{$nodeid} == $NODE{""}
 }
 
 =item snd_to_func $node, $func, @args
 
-Expects a noderef and a name of a function. Asynchronously tries to call
+Expects a node ID and a name of a function. Asynchronously tries to call
 this function with the given arguments on that node.
 
-This fucntion can be used to implement C<spawn>-like interfaces.
+This function can be used to implement C<spawn>-like interfaces.
 
 =cut
 
 sub snd_to_func($$;@) {
-   my $noderef = shift;
+   my $nodeid = shift;
 
-   ($NODE{$noderef} || add_node $noderef)
+   ($NODE{$nodeid} || add_node $nodeid)
       ->send (["", @_]);
 }
 
@@ -292,12 +243,12 @@ sub eval_on($@) {
 }
 
 sub kil(@) {
-   my ($noderef, $portid) = split /#/, shift, 2;
+   my ($nodeid, $portid) = split /#/, shift, 2;
 
    length $portid
-      or Carp::croak "$noderef#$portid: killing a node port is not allowed, caught";
+      or Carp::croak "$nodeid#$portid: killing a node port is not allowed, caught";
 
-   ($NODE{$noderef} || add_node $noderef)
+   ($NODE{$nodeid} || add_node $nodeid)
       ->kill ("$portid", @_);
 }
 
@@ -306,8 +257,8 @@ sub _nodename {
    (POSIX::uname ())[1]
 }
 
-sub resolve_node($) {
-   my ($noderef) = @_;
+sub _resolve($) {
+   my ($nodeid) = @_;
 
    my $cv = AE::cv;
    my @res;
@@ -318,13 +269,13 @@ sub resolve_node($) {
       for (sort { $a->[0] <=> $b->[0] } @res) {
          push @refs, $_->[1] unless $seen{$_->[1]}++
       }
-      shift->send (join ",", @refs);
+      shift->send (@refs);
    });
 
-   $noderef = $DEFAULT_PORT unless length $noderef;
+   $nodeid = $DEFAULT_PORT unless length $nodeid;
 
    my $idx;
-   for my $t (split /,/, $noderef) {
+   for my $t (split /,/, $nodeid) {
       my $pri = ++$idx;
 
       $t = length $t ? _nodename . ":$t" : _nodename
@@ -351,85 +302,48 @@ sub resolve_node($) {
    $cv
 }
 
-sub _node_rename {
-   $NODE = shift;
+sub initialise_node(;$%) {
+   my ($profile) = @_;
 
-   my $self = $NODE{""};
-   $NODE{$NODE} = delete $NODE{$self->{noderef}};
-   $self->{noderef} = $NODE;
-}
+   $profile = _nodename
+      unless defined $profile;
 
-sub initialise_node(@) {
-   my ($noderef, @others) = @_;
+   $CONFIG = AnyEvent::MP::Config::find_profile $profile;
 
-   my $profile = AnyEvent::MP::Config::find_profile
-                    +(defined $noderef ? $noderef : _nodename);
+   my $node = exists $CONFIG->{nodeid} ? $CONFIG->{nodeid} : $profile;
+   $NODE = $node
+      unless $node eq "anon/";
 
-   $noderef = $profile->{noderef}
-      if exists $profile->{noderef};
+   $NODE{$NODE} = $NODE{""};
+   $NODE{$NODE}{id} = $NODE;
 
-   push @others, @{ $profile->{seeds} };
+   my $seeds = $CONFIG->{seeds};
+   my $binds = $CONFIG->{binds};
 
-   if ($noderef =~ /^slave\/(.*)$/) {
-      $SLAVE = AE::cv;
-      my $name = $1;
-      $name = $NODE unless length $name;
-      $noderef = AE::cv;
-      $noderef->send ("slave/$name");
+   $binds ||= [$NODE];
 
-      @others
-         or Carp::croak "seed nodes must be specified for slave nodes";
+   $WARN->(8, "node $NODE starting up.");
 
-   } else {
-      $PUBLIC = 1;
-      $noderef = resolve_node $noderef;
+   $LISTENER = [];
+   %LISTENER = ();
+
+   for (map _resolve $_, @$binds) {
+      for my $bind ($_->recv) {
+         my ($host, $port) = AnyEvent::Socket::parse_hostport $bind
+            or Carp::croak "$bind: unparsable local bind address";
+
+         $LISTENER{$bind} = AnyEvent::MP::Transport::mp_server $host, $port;
+         push @$LISTENER, $bind;
+      }
    }
 
-   @others = map $_->recv, map +(resolve_node $_), @others;
+   # the global service is mandatory currently
+   require AnyEvent::MP::Global;
 
-   _node_rename $noderef->recv;
+   # connect to all seednodes
+   AnyEvent::MP::Global::set_seeds (map $_->recv, map _resolve $_, @$seeds);
 
-   for my $t (split /,/, $NODE) {
-      my ($host, $port) = AnyEvent::Socket::parse_hostport $t;
-
-      $LISTENER{$t} = AnyEvent::MP::Transport::mp_server $host, $port,
-         sub {
-            my ($tp) = @_;
-
-            # TODO: urgs
-            my $node = add_node $tp->{remote_node};
-            $node->{trial}{accept} = $tp;
-         },
-      ;
-   }
-
-   for (@others) {
-      my $node = add_node $_;
-      $node->{autoconnect} = 1;
-      $node->connect;
-   }
-
-   if ($SLAVE) {
-      my $timeout = AE::timer $MONITOR_TIMEOUT, 0, sub { $SLAVE->() };
-      my $master = $SLAVE->recv;
-      $master
-         or Carp::croak "AnyEvent::MP: unable to enter slave mode, unable to connect to a seednode.\n";
-
-      $MASTER = $master->{noderef};
-      $master->{autoconnect} = 1;
-
-      (my $via = $MASTER) =~ s/,/!/g; 
-
-      $NODE .= "\@$via";
-      _node_rename $NODE;
-
-      $_->send (["", iam => $NODE])
-         for values %NODE;
-
-      $SLAVE = 1;
-   }
-
-   for (@{ $profile->{services} }) {
+   for (@{ $CONFIG->{services} }) {
       if (s/::$//) {
          eval "require $_";
          die $@ if $@;
@@ -442,15 +356,7 @@ sub initialise_node(@) {
 #############################################################################
 # node monitoring and info
 
-sub _uniq_nodes {
-   my %node;
-
-   @node{values %NODE} = values %NODE;
-
-   values %node;
-}
-
-=item node_is_known $noderef
+=item node_is_known $nodeid
 
 Returns true iff the given node is currently known to the system.
 
@@ -460,7 +366,7 @@ sub node_is_known($) {
    exists $NODE{$_[0]}
 }
 
-=item node_is_up $noderef
+=item node_is_up $nodeid
 
 Returns true if the given node is "up", that is, the kernel thinks it has
 a working connection to it.
@@ -477,35 +383,41 @@ sub node_is_up($) {
 
 =item known_nodes
 
-Returns the noderefs of all nodes connected to this node, including
-itself.
+Returns the node IDs of all nodes currently known to this node, including
+itself and nodes not currently connected.
 
 =cut
 
 sub known_nodes {
-   map $_->{noderef}, _uniq_nodes
+   map $_->{id}, values %NODE
 }
 
 =item up_nodes
 
-Return the noderefs of all nodes that are currently connected (excluding
+Return the node IDs of all nodes that are currently connected (excluding
 the node itself).
 
 =cut
 
 sub up_nodes {
-   map $_->{noderef}, grep $_->{transport}, _uniq_nodes
+   map $_->{id}, grep $_->{transport}, values %NODE
 }
 
-=item $guard = mon_nodes $callback->($noderef, $is_up, @reason)
+=item $guard = mon_nodes $callback->($nodeid, $is_up, @reason)
 
-Registers a callback that is called each time a node goes up (connection
-is established) or down (connection is lost).
+Registers a callback that is called each time a node goes up (a connection
+is established) or down (the connection is lost).
 
 Node up messages can only be followed by node down messages for the same
 node, and vice versa.
 
-The function returns an optional guard which can be used to de-register
+Note that monitoring a node is usually better done by monitoring it's node
+port. This function is mainly of interest to modules that are concerned
+about the network topology and low-level connection handling.
+
+Callbacks I<must not> block and I<should not> send any messages.
+
+The function returns an optional guard which can be used to unregister
 the monitoring callback again.
 
 =cut
@@ -524,11 +436,11 @@ sub _inject_nodeevent($$;@) {
    my ($node, $up, @reason) = @_;
 
    for my $cb (values %MON_NODES) {
-      eval { $cb->($node->{noderef}, $up, @reason); 1 }
+      eval { $cb->($node->{id}, $up, @reason); 1 }
          or $WARN->(1, $@);
    }
 
-   $WARN->(7, "$node->{noderef} is " . ($up ? "up" : "down") . " (@reason)");
+   $WARN->(7, "$node->{id} is " . ($up ? "up" : "down") . " (@reason)");
 }
 
 #############################################################################
@@ -538,16 +450,18 @@ our %node_req = (
    # internal services
 
    # monitoring
-   mon0 => sub { # disable monitoring
+   mon0 => sub { # stop monitoring a port
       my $portid = shift;
       my $node   = $SRCNODE;
       $NODE{""}->unmonitor ($portid, delete $node->{rmon}{$portid});
    },
-   mon1 => sub { # enable monitoring
+   mon1 => sub { # start monitoring a port
       my $portid = shift;
       my $node   = $SRCNODE;
+      Scalar::Util::weaken $node; #TODO# ugly
       $NODE{""}->monitor ($portid, $node->{rmon}{$portid} = sub {
-         $node->send (["", kil => $portid, @_]);
+         $node->send (["", kil => $portid, @_])
+            if $node && $node->{transport}; #TODO# ugly, should use snd and remove-on-disocnnect
       });
    },
    kil => sub {
@@ -556,23 +470,12 @@ our %node_req = (
 
       $_->(@_) for @$cbs;
    },
-   # node changed its name (for slave nodes)
-   iam => sub {
-      # get rid of bogus slave/xxx name, hopefully
-      delete $NODE{$SRCNODE->{noderef}};
-
-      # change noderef
-      $SRCNODE->{noderef} = $_[0];
-
-      # anchor
-      $NODE{$_[0]} = $SRCNODE;
-   },
 
    # "public" services - not actually public
 
    # relay message to another node / generic echo
    snd => \&snd,
-   snd_multi => sub {
+   snd_multiple => sub {
       snd @$_ for @_
    },
 
@@ -599,7 +502,7 @@ our %node_req = (
       #
    },
    "" => sub {
-      # empty messages are sent by monitoring
+      # empty messages are keepalives or similar devnull-applications
    },
 );
 

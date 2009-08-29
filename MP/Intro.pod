@@ -3,478 +3,426 @@
 =head1 Introduction and Terminology
 
 This is a tutorial about how to get the swing of the new L<AnyEvent::MP>
-module, which allows us to transparently pass messages to our own process
-and to other processes on another or the same host.
+module, which allows programs to transparently pass messages within the
+process and to other processes on the same or a different host.
 
-What kind of messages? Well, basically a message here means a list of Perl
+What kind of messages? Basically a message here means a list of Perl
 strings, numbers, hashes and arrays, anything that can be expressed as a
-L<JSON> text (as JSON is used by default in the protocol).
+L<JSON> text (as JSON is used by default in the protocol). Here are two
+examples:
 
-And next you might ask: between which entities are those messages being
-"passed"? Physically within or between I<nodes>: a nodes is basically a
-process/program that use L<AnyEvent::MP> and can run either on the same or
-different hosts.
+    write_log => 1251555874, "action was successful.\n"
+    123, ["a", "b", "c"], { foo => "bar" }
 
-To make this more managable, every node can contain any number of
-I<ports>: Ports are ultimately the receivers of your messages.
+When using L<AnyEvent::MP> it is customary to use a descriptive string as
+first element of a message, that indictes the type of the message. This
+element is called a I<tag> in L<AnyEvent::MP>, as some API functions
+(C<rcv>) support matching it directly.
 
-In this tutorial I'll show you how to write a simple chat server based
-on L<AnyEvent::MP>. This example is used because it nicely shows how to
-organise a simple application, but keep in mind that every node trusts any
-other, so this chat cannot be used to implement a real chat server and
-client system, but it can be used to implement a distributed chat server
-for example.
+Supposedly you want to send a ping message with your current time to
+somewhere, this is how such a message might look like (in Perl syntax):
+
+   ping => 1251381636
+
+Now that we know what a message is, to which entities are those
+messages being I<passed>? They are I<passed> to I<ports>. A I<port> is
+a destination for messages but also a context to execute code: when
+a runtime error occurs while executing code belonging to a port, the
+exception will be raised on the port and can even travel to interested
+parties on other nodes, which makes supervision of distributed processes
+easy.
+
+How do these ports relate to things you know? Each I<port> belongs
+to a I<node>, and a I<node> is just the UNIX process that runs your
+L<AnyEvent::MP> application.
+
+Each I<node> is distinguished from other I<nodes> running on the same or
+another host in a network by its I<node ID>. A I<node ID> is simply a
+unique string chosen manually or assigned by L<AnyEvent::MP> in some way
+(UNIX nodename, random string...).
+
+Here is a diagram about how I<nodes>, I<ports> and UNIX processes relate
+to each other. The setup consists of two nodes (more are of course
+possible): Node C<A> (in UNIX process 7066) with the ports C<ABC> and
+C<DEF>. And the node C<B> (in UNIX process 8321) with the ports C<FOO> and
+C<BAR>.
+
+
+  |- PID: 7066 -|                  |- PID: 8321 -|
+  |             |                  |             |
+  | Node ID: A  |                  | Node ID: B  |
+  |             |                  |             |
+  |   Port ABC =|= <----\ /-----> =|= Port FOO   |
+  |             |        X         |             |
+  |   Port DEF =|= <----/ \-----> =|= Port BAR   |
+  |             |                  |             |
+  |-------------|                  |-------------|
+
+The strings for the I<port IDs> here are just for illustrative
+purposes: Even though I<ports> in L<AnyEvent::MP> are also identified by
+strings, they can't be choosen manually and are assigned by the system
+dynamically. These I<port IDs> are unique within a network and can also be
+used to identify senders or as message tags for instance.
+
+The next sections will explain the API of L<AnyEvent::MP> by going through
+a few simple examples. Later some more complex idioms are introduced,
+which are hopefully useful to solve some real world problems.
+
+=head1 Passing Your First Message
+
+As a start lets have a look at the messaging API. The following example
+is just a demo to show the basic elements of message passing with
+L<AnyEvent::MP>.
+
+The example should print: C<Ending with: 123>, in a rather complicated
+way, by passing some message to a port.
+
+   use AnyEvent;
+   use AnyEvent::MP;
+
+   my $end_cv = AnyEvent->condvar;
+
+   my $port = port;
+
+   rcv $port, test => sub {
+      my ($data) = @_;
+      $end_cv->send ($data);
+   };
+
+   snd $port, test => 123;
+
+   print "Ending with: " . $end_cv->recv . "\n";
+
+It already uses most of the essential functions inside
+L<AnyEvent::MP>: First there is the C<port> function which will create a
+I<port> and will return it's I<port ID>, a simple string.
+
+This I<port ID> can be used to send messages to the port and install
+handlers to receive messages on the port. Since it is a simple string
+it can be safely passed to other I<nodes> in the network when you want
+to refer to that specific port (usually used for RPC, where you need
+to tell the other end which I<port> to send the reply to - messages in
+L<AnyEvent::MP> have a destination, but no source).
+
+The next function is C<rcv>:
+
+   rcv $port, test => sub { ... };
+
+It installs a receiver callback on the I<port> that specified as the first
+argument (it only works for "local" ports, i.e. ports created on the same
+node). The next argument, in this example C<test>, specifies a I<tag> to
+match. This means that whenever a message with the first element being
+the string C<test> is received, the callback is called with the remaining
+parts of that message.
+
+Messages can be sent with the C<snd> function, which is used like this in
+the example above:
+
+   snd $port, test => 123;
+
+This will send the message C<'test', 123> to the I<port> with the I<port
+ID> stored in C<$port>. Since in this case the receiver has a I<tag> match
+on C<test> it will call the callback with the first argument being the
+number C<123>.
+
+The callback is a typicall AnyEvent idiom: the callback just passes
+that number on to the I<condition variable> C<$end_cv> which will then
+pass the value to the print. Condition variables are out of the scope
+of this tutorial and not often used with ports, so please consult the
+L<AnyEvent::Intro> about them.
+
+Passing messages inside just one process is boring. Before we can move on
+and do interprocess message passing we first have to make sure some things
+have been set up correctly for our nodes to talk to each other.
 
 =head1 System Requirements and System Setup
 
-Before we can start we have to make sure some things work on your
-system.
+Before we can start with real IPC we have to make sure some things work on
+your system.
 
-You should of course first make sure that L<AnyEvent> and L<AnyEvent::MP>
-are installed. But how to do that is out of scope of this tutorial.
-
-Then we have to setup a I<shared secret>: for two L<AnyEvent::MP> nodes to
-be able to communicate with each other and authenticate each other it is
-necessary to setup the same I<shared secret> for both of them (use use TLS
-certificates).
+First we have to setup a I<shared secret>: for two L<AnyEvent::MP>
+I<nodes> to be able to communicate with each other over the network it is
+necessary to setup the same I<shared secret> for both of them, so they can
+prove their trustworthyness to each other.
 
 The easiest way is to set this up is to use the F<aemp> utility:
 
    aemp gensecret
 
 This creates a F<$HOME/.perl-anyevent-mp> config file and generates a
-random shared secret. You can copy this file to any other system and then
-communicate with it. You can also select your own shared secret (F<aemp
-setsecret>) and for increased security requirements you can even create
-a TLS certificate (F<aemp gencert>), causing connections to not just be
-authenticated, but also to be encrypted.
+random shared secret. You can copy this file to any other system and
+then communicate over the network (via TCP) with it. You can also select
+your own shared secret (F<aemp setsecret>) and for increased security
+requirements you can even create (or configure) a TLS certificate (F<aemp
+gencert>), causing connections to not just be securely authenticated, but
+also to be encrypted and protected against tinkering.
 
-Connections will only be successful when the nodes that want to connect to
-each other have the same I<shared secret> (or successfully verify the TLS
-certificate of the other side).
+Connections will only be successfully established when the I<nodes>
+that want to connect to each other have the same I<shared secret> (or
+successfully verify the TLS certificate of the other side, in which case
+no shared secret is required).
 
 B<If something does not work as expected, and for example tcpdump shows
-that the connections are closed almost immediatly, you should make sure
+that the connections are closed almost immediately, you should make sure
 that F<~/.perl-anyevent-mp> is the same on all hosts/user accounts that
 you try to connect with each other!>
 
-=head1 The Chat Client
+Thats is all for now, you will find some more advanced fiddling with the
+C<aemp> utility later.
 
-OK, lets start by implementing the "frontend" of the client. We will
-develop the client first and postpone the server for later, as the most
-complex things actually happen in the client.
 
-We will use L<AnyEvent::Handle> to do non-blocking IO read on standard
-input (all of this code deals with actually handling user input, no
-message passing yet):
+=head1 Passing Messages Between Processes
 
-   #!perl
+=head2 The Receiver
 
-   use AnyEvent;
-   use AnyEvent::Handle;
-
-   sub send_message {
-      die "This is where we will send the messages to the server"
-         . "in the next step of this tutorial.\n"
-   }
-
-   # make an AnyEvent condition variable for the 'quit' condition
-   # (when we want to exit the client).
-   my $quit_cv = AnyEvent->condvar;
-
-   my $stdin_hdl = AnyEvent::Handle->new (
-      fh       => *STDIN,
-      on_error => sub { $quit_cv->send },
-      on_read  => sub {
-         my ($hdl) = @_;
-
-         $hdl->push_read (line => sub {
-            my ($hdl, $line) = @_;
-
-            if ($line =~ /^\/quit/) { # /quit will end the client
-               $quit_cv->send;
-            } else {
-               send_message ($line);
-            }
-         });
-      }
-   );
-
-   $quit_cv->recv;
-
-This is now a very basic client. Explaining explicitly what
-L<AnyEvent::Handle> does or what a I<condvar> is all about is out of scope
-of this document, please consult L<AnyEvent::Intro> or the manual pages
-for L<AnyEvent> and L<AnyEvent::Handle>.
-
-=head1 First Steps Into Messaging
-
-To supply the C<send_message> function we now take a look at
-L<AnyEvent::MP>. This is an example of how it might look like:
-
-   ... # the use lines from the above snippet
-
-   use AnyEvent::MP;
-
-   sub send_message {
-      my ($msg) = @_;
-
-      snd $server_port, message => $msg;
-   }
-
-   ... # the rest of the above script
-
-The C<snd> function is exported by L<AnyEvent::MP>, it stands for 'send
-a message'. The first argument is the I<port> (a I<port> is something
-that can receive messages, represented by a printable string) of the
-server which will receive the message. How we get this port will be
-explained in the next step.
-
-The remaining arguments of C<snd> are C<message> and C<$msg>, the first
-two elements of the I<message> (a I<message> in L<AnyEvent::MP> is a
-simple list of values, which can be sent to a I<port>).
-
-So all the function does is send the two values C<message> (a constant
-string to tell the server what to expect) and the actual message string.
-
-Thats all fine and simple so far, but where do we get the
-C<$server_port>? Well, we need to get the unique I<port id> of the
-server's port where it wants to receive all the incoming chat messages. A
-I<port id> is unfortunately a very unique string, which we are unable to
-know in advance. But L<AnyEvent::MP> supports the concept of 'registered
-ports', which is basically a port on the server side registered under
-a well known name.
-
-For example, the server has a port for receiving chat messages with a
-unique I<port id> and registers it under the name C<chatter>.
-
-BTW, these "registered port names" should follow similar rules as Perl
-identifiers, so you should prefix them with your package/module name to
-make them unique, unless you use them in the main program.
-
-As I<messages> can only be sent to a I<port id> and not just to some name
-we have to ask the server node for the I<port id> of the port registered
-as C<chatter>.
-
-=head1 Finding The Chatter Port
-
-Ok, lots of talk, now some code. Now we will actually get the
-C<$server_port> from the backend:
-
-   ...
-
-   use AnyEvent::MP;
-
-   my $server_node = "127.0.0.1:1299";
-
-   my $client_port = port;
-
-   snd $server_node, lookup => "chatter", $client_port, "resolved";
-
-   my $resolved_cv = AnyEvent->condvar;
-   my $server_port;
-
-   # setup a receiver callback for the 'resolved' message:
-   rcv $client_port, resolved => sub {
-      my ($tag, $chatter_port_id) = @_;
-
-      print "Resolved the server port 'chatter' to $chatter_port_id\n";
-      $server_port = $chatter_port_id;
-
-      $resolved_cv->send;
-      1
-   };
-
-   # lets block the client until we have resolved the server port.
-   $resolved_cv->recv;
-
-   # now setup another receiver callback for the chat messages:
-   rcv $client_port, message => sub {
-      my ($tag, $msg) = @_;
-
-      print "chat> $msg\n";
-      0
-   };
-
-   # send a 'join' message to the server:
-   snd $server_port, join => "$client_port";
-
-   sub send_message { ...
-
-Now that was a lot of new stuff:
-
-First we define the C<$server_node>: In order to refer to another node
-we need some kind of string to reference it - the node reference. The
-I<noderef> is basically a comma separated list of C<address:port>
-pairs. We assume in this tutorial that the server runs on C<127.0.0.1>
-(localhost) on port 1299, which results in the noderef C<127.0.0.1:1299>.
-
-Next, in order to receive a reply from the other node or the server we
-need to have a I<port> that messages can be sent to. This is what the
-C<port> function will do for us, it just creates a new local port and
-returns it's I<port ID> that can then be used to receive messages.
-
-When you look carefully, you will see that the first C<snd> uses the
-C<$server_node> (a noderef) as destination port. Well, what I didn't
-tell you yet is that each I<node> has a default I<port> to receive
-messages. The ID of this port is the same as the noderef.
-
-This I<default port> provides some special services for us, for example
-resolving a registered name to a I<port id> (a-ha! finally!).
-
-This is exactly what this line does:
-
-   snd $server_node, lookup => "chatter", $client_port, "resolved";
-
-This sends a message with first element being C<lookup>, followed by the
-(hopefully) registered port name that we want to resolve to a I<port
-id>: C<chatter>. And in order for the server node to be able to send us
-back the resolved I<port ID> we have to tell it where to send it: The
-result message will be sent to C<$client_port> (the I<port id> of the
-port we just created), and will have the string C<resolved> as the first
-element.
-
-When the node receives this message, it will look up the name, gobble up
-all the extra arguments we passed, append the resolved name, and send the
-resulting list as a message.
-
-Next we register a receiver for this C<lookup>-request.
-
-   rcv $client_port, resolved => sub {
-      my ($tag, $chatter_port_id) = @_;
-      ...
-      1
-   };
-
-This sets up a receiver on our own port for messages with the first
-element being the string C<resolved>. Receivers can match the contents of
-the messages before actually executing the specified callback.
-
-B<Please note> that the every C<rcv> callback has to return either a true
-or a false value, indicating whether it is B<successful>/B<done> (true) or
-still wants to B<continue> (false) receiving messages.
-
-In this case we tell the C<$client_port> to look into all the messages
-it receives and look for the string C<resolved> in the first element of
-the message. If it is found, the given callback will be called with the
-message elements as arguments.
-
-Using a string as the first element of the message is called I<tagging>
-the message. It's common practise to code the 'type' of a message into
-it's first element, as this allows for simple matching.
-
-The result message will contain the I<port ID> of the well known port
-C<chatter> as second element, which will be stored in C<$chatter_port_id>.
-
-This port ID will then be stored in C<$server_port>, followed by calling
-C<send> on $resolved_cv> so the program will continue.
-
-The callback then returns a C<1> (a true value), to indicate that it has
-done it's job and doesn't want to receive further C<resolved> messages.
-
-After this the chat message receiver callback is registered with the port:
-
-   rcv $client_port, message => sub {
-      my ($tag, $msg) = @_;
-
-      print "chat> $msg\n";
-
-      0
-   };
-
-We assume that all messages that are broadcast to the clients by the
-server contain the string tag C<message> as first element, and the actual
-message as second element. The callback returns a false value this time,
-to indicate that it is not yet done and wants to receive further messages.
-
-The last thing to do is to tell the server to send us new chat messages
-from other clients. We do so by sending the message C<join> followed by
-our own I<port ID>.
-
-   # send the server a 'join' message:
-   snd $server_port, join => $client_port;
-
-This way the server knows where to send all the new messages to.
-
-=head1 The Completed Client
-
-This is the complete client script:
-
-   #!perl
-
-   use AnyEvent;
-   use AnyEvent::Handle;
-   use AnyEvent::MP;
-
-   my $server_node = "127.0.0.1:1299";
-
-   my $client_port = port;
-
-   snd $server_node, lookup => "chatter", $client_port, "resolved";
-
-   my $resolved_cv = AnyEvent->condvar;
-   my $server_port;
-
-   # setup a receiver callback for the 'resolved' message:
-   rcv $client_port, resolved => sub {
-      my ($tag, $chatter_port_id) = @_;
-
-      print "Resolved the server port 'chatter' to $chatter_port_id\n";
-      $server_port = $chatter_port_id;
-
-      $resolved_cv->send;
-      1
-   };
-
-   # lets block the client until we have resolved the server port.
-   $resolved_cv->recv;
-
-   # now setup another receiver callback for the chat messages:
-   rcv $client_port, message => sub {
-      my ($tag, $msg) = @_;
-
-      print "chat> $msg\n";
-      0
-   };
-
-   # send a 'join' message to the server:
-   snd $server_port, join => "$client_port";
-
-   sub send_message {
-      my ($msg) = @_;
-
-      snd $server_port, message => $msg;
-   }
-
-   # make an AnyEvent condition variable for the 'quit' condition
-   # (when we want to exit the client).
-   my $quit_cv = AnyEvent->condvar;
-
-   my $stdin_hdl = AnyEvent::Handle->new (
-      fh       => *STDIN,
-      on_error => sub { $quit_cv->send },
-      on_read  => sub {
-         my ($hdl) = @_;
-
-         $hdl->push_read (line => sub {
-            my ($hdl, $line) = @_;
-
-            if ($line =~ /^\/quit/) { # /quit will end the client
-               $quit_cv->send;
-            } else {
-               send_message ($line);
-            }
-         });
-      }
-   );
-
-   $quit_cv->recv;
-
-=head1 The Server
-
-Ok, we finally come to the server.
-
-The server of course also needs to set up a port, and in addition needs to
-I<register> it, so the clients can find it.
-
-Again, let's jump directly into the code:
-
-   #!perl
+Lets split the previous example up into two programs: one that contains
+the sender and one for the receiver. First the receiver application, in
+full:
 
    use AnyEvent;
    use AnyEvent::MP;
+   use AnyEvent::MP::Global;
 
-   become_public "127.0.0.1:1299";
+   initialise_node "eg_simple_receiver";
 
-   my $chatter_port = port;
+   my $port = port;
 
-   reg $chatter_port, "chatter";
+   AnyEvent::MP::Global::register $port, "eg_receivers";
 
-   my %client_ports;
+   rcv $port, test => sub {
+      my ($data, $reply_port) = @_;
 
-   rcv $chatter_port,
-      join => sub {
-         my ($tag, $client_port) = @_;
-
-         print "got new client port: $client_port\n";
-         $client_ports{$client_port} = 1;
-
-         0
-      },
-      message => sub {
-         my ($tag, $msg) = @_;
-
-         print "message> $msg\n";
-
-         snd $_, message => $msg
-            for keys %client_ports;
-
-         0
-      };
+      print "Received data: " . $data . "\n";
+   };
 
    AnyEvent->condvar->recv;
 
-That is all. Looks much simpler than the client, doesn't it?
-   
-Let's quickly look over it, as C<rcv> has already been discussed in the
-client part of this tutorial above.
+=head3 AnyEvent::MP::Global
 
-First this:
+Now, that wasn't too bad, was it? Ok, let's step through the new functions
+and modules that have been used.
 
-   become_public "127.0.0.1:1299";
+For starters, there is now an additional module being
+used: L<AnyEvent::MP::Global>. This module provides us with a I<global
+registry>, which lets us register ports in groups that are visible on all
+I<nodes> in a network.
 
-This will tell our I<node> to become a I<public> node, which means that it
-can be contacted via TCP. The first argument should be the I<noderef> the
-server wants to be reachable at. In this case it's the TCP port 1299 on
-C<127.0.0.1>.
+What is this useful for? Well, the I<port IDs> are random-looking strings,
+assigned by L<AnyEvent::MP>. We cannot know those I<port IDs> in advance,
+so we don't know which I<port ID> to send messages to, especially when the
+message is to be passed between different I<nodes> (or UNIX processes). To
+find the right I<port> of another I<node> in the network we will need
+to communicate this somehow to the sender. And exactly that is what
+L<AnyEvent::MP::Global> provides.
 
-Next we set up two receivers, one for the C<join> messages and another one
-for the actual messages of type C<messsage>. This is done with a single
-call to C<rcv>, which allows multiple C<< match => $callback >> pairs.
+Especially in larger, more anonymous networks this is handy: imagine you
+have a few database backends, a few web frontends and some processing
+distributed over a number of hosts: all of these would simply register
+themselves in the appropriate group, and your web frontends can start to
+find some database backend.
 
-In the C<join> callback we receive the client port, which is simply
-remembered in the C<%client_ports> hash. In the C<message> callback we
-just iterate through all known C<%client_ports> and relay the message to
-them.
+=head3 C<initialise_node> And The Network
 
-That concludes the server.
+Now, let's have a look at the new function, C<initialise_node>:
 
-=head1 The Remaining Problems
+   initialise_node "eg_simple_receiver";
 
-The implementation as shown still has some bugs. For instance: How does
-the server know that the client isn't there anymore, so it can clean up
-the C<%client_ports> hash? Also, the chat messages have no originator, so
-we don't know who actually sent the message (which would be quite useful
-for human-to-human interaction: to know who the other one is :).
+Before we are able to send messages to other nodes we have to initialise
+ourself to become a "distributed node". Initialising a node means naming
+the node, optionally binding some TCP listeners so that other nodes can
+contact it and connecting to a predefined set of seed addresses so the
+node can discover the existing network - and the existing network can
+discover the node!
 
-But aside from these issues I hope this tutorial showed you the basics of
-L<AnyEvent::MP> and explained some common idioms.
+The first argument, the string C<"eg_simple_receiver">, is the so-called
+I<profile> to use: A profile holds some information about the application
+that is going to be a node in an L<AnyEvent::MP> network. Customarily you
+don't specify a profile name at all: in this case, AnyEvent::MP will use
+the POSIX nodename.
 
-How to solve the reliability and C<%client_ports> cleanup problem will
-be explained later in this tutorial (TODO).
+The profile allows you to set the I<node ID> that your application will
+use (the node ID defaults to the profile name if not specified). You can
+also set I<binds> in the profile, meaning that you can define TCP ports
+that the application will listen on for incoming connections from other
+nodes of the network.
 
-=head1 Inside The Protocol
+You should also configure I<seeds> in the profile: A I<seed> is just a
+TCP address of some other node in the network. To explain this a bit
+more detailed we have to look at the topology of an L<AnyEvent::MP>
+network. The topology is called a I<fully connected mesh>, here an example
+with 4 nodes:
 
-Now, for the interested parties, let me explain some details about the protocol
-that L<AnyEvent::MP> nodes use to communicate to each other. If you are not
-interested you can skip this section.
+   N1--N2
+   | \/ |
+   | /\ |
+   N3--N4
 
-Usually TCP is used for communication. Each I<node>, if configured to be
-a I<public> node with the C<initialise_node> function will listen on the
-configured TCP port (default is 4040).
+Now imagine another I<node> C<N5>. wants to connect itself to that network:
 
-If then one I<node> wants to send a message to another I<node> it will
-connect to the host and port given in the I<port ID>.
+   N1--N2
+   | \/ |    N5
+   | /\ |
+   N3--N4
 
-Then some handshaking occurs to check whether both I<nodes> know the
-I<shared secret>. Optionally, TLS can be enabled (about how to do this
-exactly please consult the L<AnyEvent::MP> man page, just a hint: It
-should be enough to put the private key and (self signed) certificate in
-the C<~/.aemp-secret> file of all nodes).
+The new node needs to know the I<binds> of all nodes already
+connected. Exactly this is what the I<seeds> are for: Let's assume that
+the new node (C<N5>) uses the TCP address of the node C<N2> as seed.  This
+cuases it to connect to C<N2>:
 
-After the handshake, messages will be exchanged using a serialiser
-(usually L<JSON> is used for this, but it is also possible to use other
-serialization formats such as L<Storable>).
+   N1--N2____
+   | \/ |    N5
+   | /\ |
+   N3--N4
+
+C<N2> then tells C<N5> about the I<binds> of the other nodes it is
+connected to, and C<N5> creates the rest of the connections:
+
+    /--------\
+   N1--N2____|
+   | \/ |    N5
+   | /\ |   /|
+   N3--N4--- |
+    \________/
+
+All done: C<N5> is now happily connected to the rest of the network.
+
+=head3 Setting Up The Profiles
+
+Ok, so much to the profile. Now let's setup the C<eg_simple_receiver>
+I<profile> for later use. For the receiver we just give the receiver a
+I<bind>:
+
+   aemp profile eg_simple_receiver setbinds localhost:12266
+
+We use C<localhost> in the example, but in the real world, you usually
+want to use the "real" IP address of your node, so hosts can connect to
+it. Of course, you can specify many binds, and it is also perfectly useful
+to run multiple nodes on the same host. Just keep in mind that other nodes
+will try to I<connect> to those addresses, and this better succeeds if you
+want your network to be in good working conditions.
+
+While we are at it, we setup the I<profile> for the sender in the
+second part of this example, too. We will call the sender I<profile>
+C<eg_simple_sender>. For the sender we set up a I<seed> pointing to the
+receiver:
+
+   aemp profile eg_simple_sender setseeds localhost:12266
+   aemp profile eg_simple_sender setbinds
+
+You might wonder why we setup I<binds> to be empty here: actually, the the
+I<fully> in the I<fully connected mesh> is not the complete truth: If you
+don't configure any I<binds> for a node profile it will parse and try to
+resolve the node ID to find addresses to bind to. In this case we pretend
+that we do not want this and epxlicitly specify an empty binds list, so
+the node will not actually listen on any TCP ports.
+
+Nodes without listeners will not be able to send messages to other nodes
+without listeners, but they can still talk to all other nodes. For this
+example, as well as in many cases in the real world, we can live with this
+restriction, and this makes it easier to avoid DNS (assuming your setup is
+broken, eliminating one potential problem :).
+
+Whee, setting up nodes can be complicated at first, but you only have to
+do it once per network, and you can leave this boring task to the admins
+or end-users that want to use your stuff :)
+
+=head3 Registering The Receiver
+
+Coming back to our example, we have now introduced the basic purpose of
+L<AnyEvent::MP::Global> and C<initialise_node> and its use of profiles. We
+also set up our profiles for later use and now we will finally continue
+talking about the receiver.
+
+Let's look at the next line(s):
+
+   my $port = port;
+   AnyEvent::MP::Global::register $port, "eg_receivers";
+
+The C<port> function has already been discussed. It simply creates a new
+I<port> and returns the I<port ID>. The C<register> function, however,
+is new:  The first argument is the I<port ID> that we want to add to a
+I<global group>, and its second argument is the name of that I<global
+group>.
+
+You can choose the name of such a I<global group> freely (prefixing your
+package name is highly recommended!). The purpose of such a group is to
+store a set of I<port IDs>. This set is made available throughout the
+whole L<AnyEvent::MP> network, so that each node can see which ports
+belong to that group.
+
+Later we will see how the sender looks for the ports in this I<global
+group> to send messages to them.
+
+The last step in the example is to set up a receiver callback for those
+messages, just as was discussed in the first example. We again match
+for the tag C<test>. The difference is that this time we don't exit the
+application after receiving the first message. Instead we continue to wait
+for new messages indefinitely.
+
+=head2 The Sender
+
+Ok, now let's take a look at the sender code:
+
+   use AnyEvent;
+   use AnyEvent::MP;
+   use AnyEvent::MP::Global;
+
+   initialise_node "eg_simple_sender";
+
+   my $find_timer =
+      AnyEvent->timer (after => 0, interval => 1, cb => sub {
+         my $ports = AnyEvent::MP::Global::find "eg_receivers"
+            or return;
+
+         snd $_, test => time
+            for @$ports;
+      });
+
+   AnyEvent->condvar->recv;
+
+It's even less code. The C<initialise_node> serves the same purpose as in
+the receiver, we just specify a different profile, the profile we set up
+without the binds.
+
+Next we set up a timer that repeatedly (every second) calls this chunk of
+code:
+
+   my $ports = AnyEvent::MP::Global::find "eg_receivers"
+      or return;
+
+   snd $_, test => time
+      for @$ports;
+
+The only new function here is the C<find> function of
+L<AnyEvent::MP::Global>. It searches in the global group named
+C<eg_receivers> for ports. If none are found, it returns C<undef>, which
+makes our code return instantly and wait for the next round, as nobody is
+interested in our message.
+
+As soon as the receiver application has connected and the information
+about the newly added port in the receiver has propagated to the sender
+node, C<find> returns an array reference that contains the I<port ID> of
+the receiver I<port(s)>.
+
+We then just send a message with a tag and the current time to every
+I<port> in the global group.
+
+=head3 Multiple Receivers
+
+You can even run multiple receivers - the only problem is that they will
+use the same node ID. To avoid this problem, you can either not specify a
+profile name at all and rely on DNS and your POSIX node name, or you can
+use a special feature called "anonymous nodes":
+
+   aemp profile eg_simple_receiver setnodeid anon/
+
+The special name C<anon/> will be replaced by a random string each time
+the node starts. This way you can start many receivers (they do not bind
+on a TCP port, so cnanot collide with each other), and all of them will
+receive the central time signal.
+
+That's all for now - next time we will teach you about monitoring by
+writing a simple chat client and server :)
 
 =head1 SEE ALSO
 
@@ -483,6 +431,8 @@ L<AnyEvent>
 L<AnyEvent::Handle>
 
 L<AnyEvent::MP>
+
+L<AnyEvent::MP::Global>
 
 =head1 AUTHOR
 

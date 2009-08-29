@@ -5,18 +5,18 @@ AnyEvent::MP::Global - some network-global services
 =head1 SYNOPSIS
 
    use AnyEvent::MP::Global;
-   # -OR-
-   aemp addservice AnyEvent::MP::Global::
 
 =head1 DESCRIPTION
 
-This module provides an assortment of network-global functions: group name
-registration and non-local locks.
+This module maintains a fully-meshed network, if possible, and tries to
+ensure that we are connected to at least one other node.
 
-It will also try to build and maintain a full mesh of all network nodes.
+It also manages named port groups - ports can register themselves in any
+number of groups that will be available network-wide, which is great for
+discovering services.
 
-While it isn't mandatory to run the global services, running it on one
-node will automatically run it on all nodes.
+Running it on one node will automatically run it on all nodes, although,
+at the moment, the global service is started by default anyways.
 
 =head1 GLOBALS AND FUNCTIONS
 
@@ -30,6 +30,7 @@ use common::sense;
 use Carp ();
 use MIME::Base64 ();
 
+use AnyEvent ();
 use AnyEvent::Util ();
 
 use AnyEvent::MP;
@@ -37,17 +38,68 @@ use AnyEvent::MP::Kernel;
 
 our $VERSION = $AnyEvent::MP::VERSION;
 
+our %addr; # port ID => [address...] mapping
+
 our %port; # our rendezvous port on the other side
 our %lreg; # local registry, name => [pid...]
 our %lmon; # local rgeistry monitoring name,pid => mon
 our %greg; # global regstry, name => [pid...]
 
+our $nodecnt;
+
 $AnyEvent::MP::Kernel::WARN->(7, "starting global service.");
 
-sub unreg_groups($) {
-   my ($noderef) = @_;
+#############################################################################
+# seednodes
 
-   my $qr = qr/^\Q$noderef\E(?:#|$)/;
+our @SEEDS;
+our %SEED_CONNECT;
+our $SEED_WATCHER;
+
+sub seed_connect {
+   my ($seed) = @_;
+
+   my ($host, $port) = AnyEvent::Socket::parse_hostport $seed
+      or Carp::croak "$seed: unparsable seed address";
+
+   # ughhh
+   $SEED_CONNECT{$seed} ||= AnyEvent::MP::Transport::mp_connect $host, $port,
+      seed => $seed,
+      sub {
+         delete $SEED_CONNECT{$seed};
+         after 1, \&more_seeding;
+      },
+   ;
+}
+
+sub more_seeding {
+   return if $nodecnt;
+   return unless @SEEDS;
+
+   $AnyEvent::MP::Kernel::WARN->(9, "no nodes connected, seeding.");
+
+   seed_connect $SEEDS[rand @SEEDS];
+}
+
+sub avoid_seed($) {
+   @SEEDS = grep $_ ne $_[0], @SEEDS;
+}
+
+sub set_seeds(@) {
+   @SEEDS = @_;
+
+   $SEED_WATCHER ||= AE::timer 5, $AnyEvent::MP::Kernel::MONITOR_TIMEOUT, \&more_seeding;
+
+   seed_connect $_
+      for @SEEDS;
+}
+
+#############################################################################
+
+sub unreg_groups($) {
+   my ($node) = @_;
+
+   my $qr = qr/^\Q$node\E(?:#|$)/;
 
    for my $group (values %greg) {
       @$group = grep $_ !~ $qr, @$group;
@@ -55,25 +107,11 @@ sub unreg_groups($) {
 }
 
 sub set_groups($$) {
-   my ($noderef, $lreg) = @_;
+   my ($node, $lreg) = @_;
 
    while (my ($k, $v) = each %$lreg) {
       push @{ $greg{$k} }, @$v;
    }
-}
-
-=item $ports = find $group
-
-Returns all the ports currently registered to the given group (as
-read-only array reference). When the group has no registered members,
-return C<undef>.
-
-=cut
-
-sub find($) {
-   @{ $greg{$_[0]} }
-      ? $greg{$_[0]}
-      : undef
 }
 
 =item $guard = register $port, $group
@@ -132,39 +170,87 @@ sub register($$) {
    wantarray && AnyEvent::Util::guard { unregister $port, $group }
 }
 
-sub start_node {
-   my ($noderef) = @_;
+=item $ports = find $group
 
-   return if exists $port{$noderef};
-   return if $noderef eq $NODE; # do not connect to ourselves
+Returns all the ports currently registered to the given group (as
+read-only array reference). When the group has no registered members,
+return C<undef>.
+
+=cut
+
+sub find($) {
+   @{ $greg{$_[0]} }
+      ? $greg{$_[0]}
+      : undef
+}
+
+sub start_node {
+   my ($node) = @_;
+
+   return if exists $port{$node};
+   return if $node eq $NODE; # do not connect to ourselves
 
    # establish connection
-   my $port = $port{$noderef} = spawn $noderef, "AnyEvent::MP::Global::connect", 0, $NODE;
-   # request any other nodes possibly known to us
+   my $port = $port{$node} = spawn $node, "AnyEvent::MP::Global::connect", 0, $NODE;
+
    mon $port, sub {
-      unreg_groups $noderef;
-      delete $port{$noderef};
+      unreg_groups $node;
+      delete $port{$node};
    };
-   snd $port, connect_nodes => up_nodes;
-   snd $port, set => \%lreg;
+
+   snd $port, addr => $AnyEvent::MP::Kernel::LISTENER;
+   snd $port, connect_nodes => \%addr if %addr;
+   snd $port, set => \%lreg if %lreg;
 }
 
 # other nodes connect via this
 sub connect {
-   my ($version, $noderef) = @_;
+   my ($version, $node) = @_;
 
    # monitor them, silently die
-   mon $noderef, psub { kil $SELF };
+   mon $node, psub { kil $SELF };
 
    rcv $SELF,
-      connect_nodes => sub {
-         for (@_) {
-            connect_node $_;
-            start_node $_;
+      addr => sub {
+         my $addresses = shift;
+         $AnyEvent::MP::Kernel::WARN->(9, "$node told us its addresses (@$addresses).");
+         $addr{$node} = $addresses;
+
+         # to help listener-less nodes, we broadcast new addresses to them unconditionally
+         #TODO: should be done by a node finding out about a listener-less one
+         if (@$addresses) {
+            for my $other (values %AnyEvent::MP::NODE) {
+               if ($other->{transport}) {
+                  if ($addr{$other->{id}} && !@{ $addr{$other->{id}} }) {
+                     $AnyEvent::MP::Kernel::WARN->(9, "helping $other->{id} to find $node.");
+                     snd $port{$other->{id}}, connect_nodes => { $node => $addresses };
+                  }
+               }
+            }
          }
       },
+      connect_nodes => sub {
+         my ($kv) = @_;
+
+         use JSON::XS;#d#
+         my $kv_txt = JSON::XS->new->encode ($kv);#d#
+         $AnyEvent::MP::Kernel::WARN->(9, "$node told us it knows about $kv_txt.");#d#
+
+         while (my ($id, $addresses) = each %$kv) {
+            my $node = AnyEvent::MP::Kernel::add_node $id;
+            $node->connect (@$addresses);
+            start_node $id;
+         }
+      },
+      find_node => sub {
+         my ($othernode) = @_;
+
+         $AnyEvent::MP::Kernel::WARN->(9, "$node asked us to find $othernode.");
+         snd $port{$node}, connect_nodes => { $othernode => $addr{$othernode} }
+            if $addr{$othernode};
+      },
       set => sub {
-         set_groups $noderef, shift;
+         set_groups $node, shift;
       },
       reg1 => \&_register,
       reg0 => \&_unregister,
@@ -172,14 +258,23 @@ sub connect {
 }
 
 sub mon_node {
-   my ($noderef, $is_up) = @_;
+   my ($node, $is_up) = @_;
 
    if ($is_up) {
-      start_node $noderef;
+      ++$nodecnt;
+      start_node $node;
    } else {
-      unreg_groups $noderef;
+      --$nodecnt;
+      more_seeding unless $nodecnt;
+      unreg_groups $node;
+
+      # forget about the node
+      delete $addr{$node};
+      # ask other nodes if they know the node
+      snd $_, find_node => $node
+         for values %port;
    }
-   #warn "node<$noderef,$is_up>\n";#d#
+   #warn "node<$node,$is_up>\n";#d#
 }
 
 mon_node $_, 1

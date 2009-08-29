@@ -15,5 +15,8 @@ eg/chat_server
 eg/chat_client
 eg/chat_server2
 eg/chat_client2
+eg/simple_example
+eg/simple_example_receiver
+eg/simple_example_sender
 t/00_load.t
 META.yml                                 Module meta-data (added by MakeMaker)

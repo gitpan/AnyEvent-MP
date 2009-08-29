@@ -1,12 +1,14 @@
 =head1 NAME
 
-AnyEvent::MP::Node - a single processing node (CPU/process...)
+AnyEvent::MP::Node - represent a node
 
 =head1 SYNOPSIS
 
    use AnyEvent::MP::Node;
 
 =head1 DESCRIPTION
+
+This is an internal utility module, horrible to look at, so don't.
 
 =cut
 
@@ -21,19 +23,25 @@ use AnyEvent::Socket ();
 use AnyEvent::MP::Transport ();
 
 sub new {
-   my ($self, $noderef) = @_;
+   my ($self, $id) = @_;
 
-   $self = bless { noderef => $noderef }, $self;
+   $self = bless { id => $id }, $self;
 
+   $self->init;
    $self->transport_reset;
 
    $self
+}
+
+sub init {
+   #
 }
 
 sub send {
    &{ shift->{send} }
 }
 
+# nodes reachable via the network
 package AnyEvent::MP::Node::External;
 
 use base "AnyEvent::MP::Node";
@@ -50,9 +58,6 @@ sub transport_reset {
       push @{$self->{queue}}, shift;
       $self->connect;
    };
-
-   $self->connect
-     if $self->{autoconnect};
 }
 
 # called only after successful handshake
@@ -67,21 +72,19 @@ sub transport_error {
    delete $self->{queue};
    $self->transport_reset;
 
-   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 0, @reason)
-      unless $no_transport;
-
    if (my $mon = delete $self->{lmon}) {
       $_->(@reason) for map @$_, values %$mon;
    }
+
+   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 0, @reason)
+      unless $no_transport;
 }
 
 # called after handshake was successful
 sub transport_connect {
    my ($self, $transport) = @_;
 
-   # first connect with a master node
-   $AnyEvent::MP::Kernel::SLAVE->($self)
-      if ref $AnyEvent::MP::Kernel::SLAVE;
+   delete $self->{trial};
 
    $self->transport_error (transport_error => "switched connections")
       if $self->{transport};
@@ -104,7 +107,7 @@ sub transport_connect {
 }
 
 sub connect {
-   my ($self) = @_;
+   my ($self, @addresses) = @_;
 
    return if $self->{transport};
 
@@ -114,30 +117,34 @@ sub connect {
       $AnyEvent::MP::Config::CFG{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT,
       0,
       sub {
-         $self->transport_error (transport_error => $self->{noderef}, "unable to connect");
+         $self->transport_error (transport_error => $self->{id}, "unable to connect");
       };
+
+   return unless @addresses;
+
+   $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} with [@addresses]");
 
    unless ($self->{connect_w}) {
       my @endpoints;
-      my %trial;
 
       $self->{connect_w} = AE::timer
          rand,
          $AnyEvent::MP::Config::CFG{connect_interval} || $AnyEvent::MP::Kernel::CONNECT_INTERVAL,
          sub {
-            @endpoints = split /,/, $self->{noderef}
+            @endpoints = @addresses
                unless @endpoints;
 
             my $endpoint = shift @endpoints;
 
-            $trial{$endpoint} ||= do {
+            $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} at $endpoint");
+
+            $self->{trial}{$endpoint} ||= do {
                my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
-                  or return $AnyEvent::MP::Kernel::WARN->(1, "$self->{noderef}: not a resolved node reference.");
+                  or return $AnyEvent::MP::Kernel::WARN->(1, "$self->{id}: not a resolved node reference.");
 
                AnyEvent::MP::Transport::mp_connect
                   $host, $port,
-                  sub { delete $trial{$endpoint} }
-               ;
+                  sub { delete $self->{trial}{$endpoint} },
             };
          }
       ;
@@ -175,51 +182,10 @@ sub unmonitor {
    }
 }
 
+# used for direct slave connections as well
 package AnyEvent::MP::Node::Direct;
 
 use base "AnyEvent::MP::Node::External";
-
-package AnyEvent::MP::Node::Indirect;
-
-use base "AnyEvent::MP::Node::Direct";
-
-sub master {
-   my ($self) = @_;
-
-   my (undef, $master) = split /\@/, $self->{noderef}, 2;
-   $master =~ s/!/,/g;
-   $master
-}
-
-sub transport_reset {
-   my ($self) = @_;
-
-   if ($self->{transport}) {
-      # as an optimisation, immediately nuke slave nodes
-      delete $AnyEvent::MP::Kernel::NODE{$self->{noderef}};
-   } else {
-      $self->SUPER::transport_reset;
-      return;#d##TODO#
-
-      my $noderef = $self->{noderef};
-      my $master = $self->master;
-
-      # slave nodes are so cool - we can always send to them :)
-
-      $self->{send} = sub {
-         $self->connect;
-         snd $master, snd => $noderef, @_;
-      };
-   }
-}
-
-sub connect {
-   my ($self) = @_;
-
-   #TODO#
-#   # ask for a connection, #TODO# rate-limit this somehow
-#   snd $self->master, relay => $self->{noderef}, connect_node => $AnyEvent::MP::Kernel::NODE;
-}
 
 package AnyEvent::MP::Node::Self;
 
@@ -238,6 +204,12 @@ sub transport_reset {
       local $AnyEvent::MP::Kernel::SRCNODE = $self;
       AnyEvent::MP::Kernel::_inject (@{ $_[0] });
    };
+}
+
+sub transport_connect {
+   my ($self, $tp) = @_;
+
+   $AnyEvent::MP::Kernel::WARN->(9, "I refuse to talk to myself ($tp->{peerhost}:$tp->{peerport})");
 }
 
 sub kill {

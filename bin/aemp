@@ -17,35 +17,45 @@
    aemp run initialise_args...  # run a node
 
    # node configuration: protocol endpoints
-   aemp setnoderef <noderef>    # configure the real noderef
-   aemp clrnoderef              # reset noderef to default
+   aemp setnodeid <nodeid>      # configure the real node id
+   aemp delnodeid               # reset node id to default (= inherit)
 
    # node configuration: secret
    aemp gensecret               # generate a random shared secret
    aemp setsecret <secret>      # set the shared secret
-   aemp clrsecret               # remove the secret
+   aemp delsecret               # remove the secret (= inherit)
 
    # node configuration: TLS
-   aemp setcert <file>          # set a certificate (key.pem + certificate.pem)
-   aemp clrcert                 # remove certificate
    aemp gencert                 # generate a random certificate
+   aemp setcert <file>          # set a certificate (key.pem + certificate.pem)
+   aemp delcert                 # remove certificate (= inherit)
 
-   # node configuration: seed nodes for bootstrapping
-   aemp setseeds <noderef>...   # set seednodes
-   aemp addseed <noderef>       # add a seednode
-   aemp delseed <noderef>       # remove seednode
+   # node configuration: seed addresses for bootstrapping
+   aemp setseeds <host:port>... # set seeds
+   aemp delseeds                # clear all seeds (= inherit)
+   aemp addseed <host:port>     # add a seed
+   aemp delseed <host:port>     # remove seed
+
+   # node configuration: bind addresses
+   aemp setbinds <host:port>... # set binds
+   aemp delbinds                # clear all binds (= inherit)
+   aemp addbind <host:port>     # add a bind address
+   aemp delbind <host:port>     # remove a bind address
 
    # node configuration: services
    aemp setservices initfunc... # set service functions
+   aemp delservices             # clear all services (= inherit)
    aemp addservice <initfunc>   # add an instance of a service
    aemp delservice <initfunc>   # delete one instance of a service
 
    # profile-specific configuration
    aemp profile <name> <command>... # apply command to profile only
    aemp delprofile <name>       # eradicate the named profile
+   aemp showprofile <name>      # display given profile
+   aemp showconfig <name>       # display effective config
 
    # debugging
-   aemp trace <noderef>         # trace the network topology
+   aemp trace <nodeid>          # trace the network topology
 
 =head1 DESCRIPTION
 
@@ -73,13 +83,15 @@ BEGIN {
       require AnyEvent::MP;
       AnyEvent::MP::initialise_node (@ARGV);
 
-      AnyEvent::detect () eq "AnyEvent::Impl::E"
+      AnyEvent::detect () eq "AnyEvent::Impl::EV"
          ? EV::loop ()
          : AE::cv ()->recv;
    }
 }
 
 use Carp ();
+
+use JSON::XS;
 
 use AnyEvent;
 use AnyEvent::Util;
@@ -114,13 +126,6 @@ sub gen_cert {
 our $cfg     = AnyEvent::MP::Config::config;
 our $profile = $cfg;
 
-sub resolve_port {
-   my ($node, $port) = split /#/, $_[0], 2;
-
-   $node = (resolve_node $node)->recv;
-   "$node#$port"
-}
-
 sub trace {
    my ($node) = @_;
    my $cv = AE::cv;
@@ -131,7 +136,7 @@ sub trace {
       $cv->();
    };
 
-   initialise_node "slave/", $node;
+   initialise_node "anon/", $node;
 
    my $reply = port {
       my ($node, @neigh) = @_;
@@ -160,8 +165,8 @@ sub docmd;
 
 our %CMD = (
    snd => sub {
-      my $port = resolve_port shift @ARGV;
-      initialise_node "slave/", node_of $port;
+      my $port = shift @ARGV;
+      initialise_node "anon/", node_of $port;
 
       snd $port, @ARGV; @ARGV = ();
 
@@ -175,8 +180,8 @@ our %CMD = (
    },
 
    rpc => sub {
-      my $port = resolve_port shift @ARGV;
-      initialise_node "slave/", node_of $port;
+      my $port = shift @ARGV;
+      initialise_node "anon/", node_of $port;
 
       my $cv = AE::cv;
       my $to = AE::timer 5, 0, sub { $cv->("timeout") };
@@ -188,8 +193,8 @@ our %CMD = (
    },
 
    mon => sub {
-      my $port = resolve_port shift @ARGV;
-      initialise_node "slave/", node_of $port;
+      my $port = shift @ARGV;
+      initialise_node "anon/", node_of $port;
 
       mon $port, my $cv = AE::cv;
       print join " ", $cv->recv, "\n";
@@ -197,20 +202,20 @@ our %CMD = (
 
    trace => sub {
       @ARGV >= 1
-         or die "noderef missing\n";
+         or die "node id missing\n";
 
-      trace +(resolve_node shift @ARGV)->recv;
+      trace shift @ARGV;
    },
 
-   setnoderef => sub {
+   setnodeid => sub {
       @ARGV >= 1
          or die "shared secret missing\n";
 
-      $profile->{noderef} = shift @ARGV;
+      $profile->{nodeid} = shift @ARGV;
       ++$cfg->{dirty};
    },
-   clrnoderef => sub {
-      delete $profile->{noderef};
+   delnodeid => sub {
+      delete $profile->{nodeid};
       ++$cfg->{dirty};
    },
 
@@ -222,10 +227,10 @@ our %CMD = (
       ++$cfg->{dirty};
    },
    gensecret => sub {
-      $profile->{secret} = AnyEvent::MP::Base::asciibits AnyEvent::MP::Base::nonce 64;
+      $profile->{secret} = AnyEvent::MP::Kernel::alnumbits AnyEvent::MP::Kernel::nonce 64;
       ++$cfg->{dirty};
    },
-   clrsecret => sub {
+   delsecret => sub {
       delete $profile->{secret};
       ++$cfg->{dirty};
    },
@@ -245,8 +250,35 @@ our %CMD = (
       $profile->{cert} = gen_cert;
       ++$cfg->{dirty};
    },
-   clrcert => sub {
+   delcert => sub {
       delete $profile->{cert};
+      ++$cfg->{dirty};
+   },
+
+   setbinds => sub {
+      $profile->{binds} = [@ARGV];
+      @ARGV = ();
+      ++$cfg->{dirty};
+   },
+   delbinds => sub {
+      delete $profile->{binds};
+      ++$cfg->{dirty};
+   },
+   addbind => sub {
+      @ARGV >= 1
+         or die "bind address missing\n";
+      my $bind = shift @ARGV;
+
+      @{ $profile->{binds} } = grep $_ ne $bind, @{ $profile->{binds} };
+      push @{ $profile->{binds} }, $bind;
+      ++$cfg->{dirty};
+   },
+   delbind => sub {
+      @ARGV >= 1
+         or die "bind address missing\n";
+      my $bind = shift @ARGV;
+
+      @{ $profile->{binds} } = grep $_ ne $bind, @{ $profile->{binds} };
       ++$cfg->{dirty};
    },
 
@@ -255,9 +287,13 @@ our %CMD = (
       @ARGV = ();
       ++$cfg->{dirty};
    },
+   delseeds => sub {
+      delete $profile->{seeds};
+      ++$cfg->{dirty};
+   },
    addseed => sub {
       @ARGV >= 1
-         or die "seed noderef missing\n";
+         or die "seed address missing\n";
       my $seed = shift @ARGV;
 
       @{ $profile->{seeds} } = grep $_ ne $seed, @{ $profile->{seeds} };
@@ -266,7 +302,7 @@ our %CMD = (
    },
    delseed => sub {
       @ARGV >= 1
-         or die "seed noderef missing\n";
+         or die "seed address missing\n";
       my $seed = shift @ARGV;
 
       @{ $profile->{seeds} } = grep $_ ne $seed, @{ $profile->{seeds} };
@@ -276,6 +312,10 @@ our %CMD = (
    setservices => sub {
       $profile->{services} = [@ARGV];
       @ARGV = ();
+      ++$cfg->{dirty};
+   },
+   delservices => sub {
+      delete $profile->{services};
       ++$cfg->{dirty};
    },
    addservice => sub {
@@ -314,6 +354,18 @@ our %CMD = (
 
       delete $cfg->{profile}{$name};
       ++$cfg->{dirty};
+   },
+   showprofile => sub {
+      @ARGV >= 1
+         or die "profile name is missing\n";
+      my $name = shift @ARGV;
+
+      print JSON::XS->new->pretty->encode ($cfg->{profile}{$name} || {});
+   },
+   showconfig => sub {
+      my $name = @ARGV ? shift @ARGV : AnyEvent::MP::Kernel::_nodename;
+
+      print JSON::XS->new->pretty->encode (AnyEvent::MP::Config::find_profile $name);
    },
 );
 
