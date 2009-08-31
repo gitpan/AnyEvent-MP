@@ -35,18 +35,15 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.9';
+our $VERSION = '0.95';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
    add_node load_func snd_to_func snd_on eval_on
 
-   NODE $NODE node_of snd kil
-   port_is_local
-   resolve_node initialise_node
+   NODE $NODE node_of snd kil port_is_local
+   configure
    known_nodes up_nodes mon_nodes node_is_known node_is_up
 );
-
-our $DEFAULT_PORT = "4040";
 
 our $CONNECT_INTERVAL =  2; # new connect every 2s, at least
 our $NETWORK_LATENCY  =  3; # activity timeout
@@ -69,7 +66,11 @@ The default simply logs the message to STDERR.
 
 =cut
 
+our $WARNLEVEL = exists $ENV{PERL_ANYEVENT_MP_WARNLEVEL} ? $ENV{PERL_ANYEVENT_MP_WARNLEVEL} : 5;
+
 our $WARN = sub {
+   return if $WARNLEVEL < $_[0];
+
    my ($level, $msg) = @_;
 
    $msg =~ s/\n$//;
@@ -79,6 +80,13 @@ our $WARN = sub {
           $level,
           $msg;
 };
+
+=item $AnyEvent::MP::Kernel::WARNLEVEL [default 5 or $ENV{PERL_ANYEVENT_MP_WARNLEVEL}]
+
+The maximum level at which warning messages will be printed to STDERR by
+the default warn handler.
+
+=cut
 
 sub load_func($) {
    my $func = $_[0];
@@ -103,10 +111,9 @@ sub nonce($) {
    } else {
       # shit...
       our $nonce_init;
-      unless ($nonce_init++) {
+         unless ($nonce_init++) {
          srand time ^ $$ ^ unpack "%L*", qx"ps -edalf" . qx"ipconfig /all";
       }
-
       $nonce = join "", map +(chr rand 256), 1 .. $_[0]
    }
 
@@ -124,8 +131,9 @@ sub alnumbits($) {
    } else {
       $data = MIME::Base64::encode_base64 $data, "";
       $data =~ s/=//;
-      $data =~ s/\//s/g;
-      $data =~ s/\+/p/g;
+      $data =~ s/x/x0/g;
+      $data =~ s/\//x1/g;
+      $data =~ s/\+/x2/g;
    }
 
    $data
@@ -231,13 +239,15 @@ sub snd_on($@) {
    snd $node, snd => @_;
 }
 
-=item eval_on $node, $string
+=item eval_on $node, $string[, @reply]
 
-Evaluates the given string as Perl expression on the given node.
+Evaluates the given string as Perl expression on the given node. When
+@reply is specified, then it is used to construct a reply message with
+C<"$@"> and any results from the eval appended.
 
 =cut
 
-sub eval_on($@) {
+sub eval_on($$;@) {
    my $node = shift;
    snd $node, eval => @_;
 }
@@ -272,8 +282,6 @@ sub _resolve($) {
       shift->send (@refs);
    });
 
-   $nodeid = $DEFAULT_PORT unless length $nodeid;
-
    my $idx;
    for my $t (split /,/, $nodeid) {
       my $pri = ++$idx;
@@ -281,20 +289,58 @@ sub _resolve($) {
       $t = length $t ? _nodename . ":$t" : _nodename
          if $t =~ /^\d*$/;
       
-      my ($host, $port) = AnyEvent::Socket::parse_hostport $t, "aemp=$DEFAULT_PORT"
+      my ($host, $port) = AnyEvent::Socket::parse_hostport $t, 0
          or Carp::croak "$t: unparsable transport descriptor";
 
-      $cv->begin;
-      AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
-         for (@_) {
-            my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
-            push @res, [
-               $pri += 1e-5,
-               AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
-            ];
-         }
-         $cv->end;
-      };
+      $port = "0" if $port eq "*";
+
+      if ($host eq "*") {
+         $cv->begin;
+         # use fork_call, as Net::Interface is big, and we need it rarely.
+         require AnyEvent::Util;
+         AnyEvent::Util::fork_call (
+            sub {
+               my @addr;
+
+               require Net::Interface;
+
+               for my $if (Net::Interface->interfaces) {
+                  # we statically lower-prioritise ipv6 here, TODO :()
+                  for my $_ ($if->address (Net::Interface::AF_INET ())) {
+                     next if /^\x7f/; # skip localhost etc.
+                     push @addr, $_;
+                  }
+                  for ($if->address (Net::Interface::AF_INET6 ())) {
+                     #next if $if->scope ($_) <= 2;
+                     next unless /^[\x20-\x3f\xfc\xfd]/; # global unicast, site-local unicast
+                     push @addr, $_;
+                  }
+
+               }
+               @addr
+            }, sub {
+               for my $ip (@_) {
+                  push @res, [
+                     $pri += 1e-5,
+                     AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $ip, $port
+                  ];
+               }
+               $cv->end;
+            }
+         );
+      } else {
+         $cv->begin;
+         AnyEvent::Socket::resolve_sockaddr $host, $port, "tcp", 0, undef, sub {
+            for (@_) {
+               my ($service, $host) = AnyEvent::Socket::unpack_sockaddr $_->[3];
+               push @res, [
+                  $pri += 1e-5,
+                  AnyEvent::Socket::format_hostport AnyEvent::Socket::format_address $host, $service
+               ];
+            }
+            $cv->end;
+         };
+      }
    }
 
    $cv->end;
@@ -302,13 +348,15 @@ sub _resolve($) {
    $cv
 }
 
-sub initialise_node(;$%) {
-   my ($profile) = @_;
+sub configure(%) {
+   my (%kv) = @_;
+
+   my $profile = delete $kv{profile};
 
    $profile = _nodename
       unless defined $profile;
 
-   $CONFIG = AnyEvent::MP::Config::find_profile $profile;
+   $CONFIG = AnyEvent::MP::Config::find_profile $profile, %kv;
 
    my $node = exists $CONFIG->{nodeid} ? $CONFIG->{nodeid} : $profile;
    $NODE = $node
@@ -320,7 +368,7 @@ sub initialise_node(;$%) {
    my $seeds = $CONFIG->{seeds};
    my $binds = $CONFIG->{binds};
 
-   $binds ||= [$NODE];
+   $binds ||= ["*"];
 
    $WARN->(8, "node $NODE starting up.");
 
@@ -332,7 +380,15 @@ sub initialise_node(;$%) {
          my ($host, $port) = AnyEvent::Socket::parse_hostport $bind
             or Carp::croak "$bind: unparsable local bind address";
 
-         $LISTENER{$bind} = AnyEvent::MP::Transport::mp_server $host, $port;
+         my $listener = AnyEvent::MP::Transport::mp_server
+            $host,
+            $port,
+            prepare => sub {
+               my (undef, $host, $port) = @_;
+               $bind = AnyEvent::Socket::format_hostport $host, $port;
+            },
+         ;
+         $LISTENER{$bind} = $listener;
          push @$LISTENER, $bind;
       }
    }
@@ -490,7 +546,7 @@ our %node_req = (
       snd @_, up_nodes;
    },
 
-   # random garbage
+   # random utilities
    eval => sub {
       my @res = eval shift;
       snd @_, "$@", @res if @_;

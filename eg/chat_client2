@@ -9,7 +9,7 @@ use AnyEvent::MP::Global;
 
 my $nick = shift;
 
-initialise_node "anon/";
+configure;
 
 $| = 1;
 

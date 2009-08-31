@@ -170,8 +170,40 @@ you try to connect with each other!>
 Thats is all for now, you will find some more advanced fiddling with the
 C<aemp> utility later.
 
+=head2 Shooting the Trouble
 
-=head1 Passing Messages Between Processes
+Sometimes things go wrong, and AnyEvent::MP, being a professional module,
+does not gratitiously spill out messages to your screen.
+
+To help troubleshooting any issues, there are two environment variables
+that you can set. The first, C<PERL_ANYEVENT_MP_WARNLEVEL> sets the
+logging level. The default is C<5>, which means nothing much is
+printed. Youc an increase it to C<8> or C<9> to get more verbose
+output. This is example output when starting a node:
+
+   2009-08-31 19:51:50 <8> node anon/5RloFvvYL8jfSScXNL8EpX starting up.
+   2009-08-31 19:51:50 <7> starting global service.
+   2009-08-31 19:51:50 <9> 10.0.0.17:4040 connected as ruth
+   2009-08-31 19:51:50 <7> ruth is up ()
+   2009-08-31 19:51:50 <9> ruth told us it knows about {"doom":["10.0.0.5:45143"],"rain":["10.0.0.19:4040"],"anon/4SYrtJ3ft5l1C16w2hto3t":["10.0.0.1:45920","[2002:58c6:438b:20:21d:60ff:fee8:6e36]:35788","[fd00::a00:1]:37104"],"frank":["10.0.0.18:4040"]}.
+   2009-08-31 19:51:50 <9> connecting to doom with [10.0.0.5:45143]
+   2009-08-31 19:51:50 <9> connecting to anon/4SYrtJ3ft5l1C16w2hto3t with [10.0.0.1:45920 [2002:58c6:438b:20:21d:60ff:fee8:6e36]:35788 [fd00::a00:1]:37104]
+   2009-08-31 19:51:50 <9> ruth told us its addresses (10.0.0.17:4040).
+
+A lot of info, but at least you can see that it does something.
+
+The other environment variable that can be useful is
+C<PERL_ANYEVENT_MP_TRACE>, which, when set to a true value, will cause
+most messages that are sent or received to be printed. In the above
+example you would see something like:
+
+   SND ruth <- ["addr",["10.0.0.1:49358","[2002:58c6:438b:20:21d:60ff:fee8:6e36]:58884","[fd00::a00:1]:45006"]]
+   RCV ruth -> ["","AnyEvent::MP::_spawn","20QA7cWubCLTWUhFgBKOx2.x","AnyEvent::MP::Global::connect",0,"ruth"]
+   RCV ruth -> ["","mon1","20QA7cWubCLTWUhFgBKOx2.x"]
+   RCV ruth -> ["20QA7cWubCLTWUhFgBKOx2.x","addr",["10.0.0.17:4040"]]
+   RCV ruth -> ["20QA7cWubCLTWUhFgBKOx2.x","nodes",{"doom":["10.0.0.5:45143"],"rain":["10.0.0.19:4040"],"anon/4SYrtJ3ft5l1C16w2hto3t":["10.0.0.1:45920","[2002:58c6:438b:20:21d:60ff:fee8:6e36]:35788","[fd00::a00:1]:37104"],"frank":["10.0.0.18:4040"]}]
+
+=head1 PART 1: Passing Messages Between Processes
 
 =head2 The Receiver
 
@@ -183,7 +215,7 @@ full:
    use AnyEvent::MP;
    use AnyEvent::MP::Global;
 
-   initialise_node "eg_simple_receiver";
+   configure nodeid => "eg_receiver", binds => ["*:4040"];
 
    my $port = port;
 
@@ -221,11 +253,11 @@ distributed over a number of hosts: all of these would simply register
 themselves in the appropriate group, and your web frontends can start to
 find some database backend.
 
-=head3 C<initialise_node> And The Network
+=head3 C<configure> and the Network
 
-Now, let's have a look at the new function, C<initialise_node>:
+Now, let's have a look at the new function, C<configure>:
 
-   initialise_node "eg_simple_receiver";
+   configure nodeid => "eg_receiver", binds => ["*:4040"];
 
 Before we are able to send messages to other nodes we have to initialise
 ourself to become a "distributed node". Initialising a node means naming
@@ -234,30 +266,37 @@ contact it and connecting to a predefined set of seed addresses so the
 node can discover the existing network - and the existing network can
 discover the node!
 
-The first argument, the string C<"eg_simple_receiver">, is the so-called
-I<profile> to use: A profile holds some information about the application
-that is going to be a node in an L<AnyEvent::MP> network. Customarily you
-don't specify a profile name at all: in this case, AnyEvent::MP will use
-the POSIX nodename.
+All of this (and more) can be passed to the C<configure> function - later
+we will see how we can do all this without even passing anything to
+C<configure>!
 
-The profile allows you to set the I<node ID> that your application will
-use (the node ID defaults to the profile name if not specified). You can
-also set I<binds> in the profile, meaning that you can define TCP ports
-that the application will listen on for incoming connections from other
-nodes of the network.
+The first parameter, C<nodeid>, specified the node ID (in this case
+C<eg_receiver> - the default is to use the node name of the current host,
+but for this example we want to be able to run many nodes on the same
+machine). Node IDs need to be unique within the network and can be almost
+any string - if you don't care, you can specify a node ID of C<anon/>
+which will then be replaced by a random node name.
 
-You should also configure I<seeds> in the profile: A I<seed> is just a
-TCP address of some other node in the network. To explain this a bit
-more detailed we have to look at the topology of an L<AnyEvent::MP>
-network. The topology is called a I<fully connected mesh>, here an example
-with 4 nodes:
+The second parameter, C<binds>, specifies a list of C<address:port> pairs
+to bind TCP listeners on. The special "address" of C<*> means to bind on
+every local IP address.
+
+The reason to bind on a TCP port is not just that other nodes can connect
+to us: if no binds are specified, the node will still bind on a dynamic
+port on all local addresses - but in this case we won't know the port, and
+cannot tell other nodes to connect to it as seed node.
+
+A I<seed> is a (fixed) TCP address of some other node in the network. To
+explain the need for seeds we have to look at the topology of a typical
+L<AnyEvent::MP> network. The topology is called a I<fully connected mesh>,
+here an example with 4 nodes:
 
    N1--N2
    | \/ |
    | /\ |
    N3--N4
 
-Now imagine another I<node> C<N5>. wants to connect itself to that network:
+Now imagine another node - C<N5> - wants to connect itself to that network:
 
    N1--N2
    | \/ |    N5
@@ -286,50 +325,17 @@ connected to, and C<N5> creates the rest of the connections:
 
 All done: C<N5> is now happily connected to the rest of the network.
 
-=head3 Setting Up The Profiles
+Of course, this process takes time, during which the node is already
+running. This also means it takes time until the node is fully connected,
+and global groups and other information is available. The best way to deal
+with this is to either retry regularly until you found the resource you
+were looking for, or to only start services on demand after a node has
+become available.
 
-Ok, so much to the profile. Now let's setup the C<eg_simple_receiver>
-I<profile> for later use. For the receiver we just give the receiver a
-I<bind>:
-
-   aemp profile eg_simple_receiver setbinds localhost:12266
-
-We use C<localhost> in the example, but in the real world, you usually
-want to use the "real" IP address of your node, so hosts can connect to
-it. Of course, you can specify many binds, and it is also perfectly useful
-to run multiple nodes on the same host. Just keep in mind that other nodes
-will try to I<connect> to those addresses, and this better succeeds if you
-want your network to be in good working conditions.
-
-While we are at it, we setup the I<profile> for the sender in the
-second part of this example, too. We will call the sender I<profile>
-C<eg_simple_sender>. For the sender we set up a I<seed> pointing to the
-receiver:
-
-   aemp profile eg_simple_sender setseeds localhost:12266
-   aemp profile eg_simple_sender setbinds
-
-You might wonder why we setup I<binds> to be empty here: actually, the the
-I<fully> in the I<fully connected mesh> is not the complete truth: If you
-don't configure any I<binds> for a node profile it will parse and try to
-resolve the node ID to find addresses to bind to. In this case we pretend
-that we do not want this and epxlicitly specify an empty binds list, so
-the node will not actually listen on any TCP ports.
-
-Nodes without listeners will not be able to send messages to other nodes
-without listeners, but they can still talk to all other nodes. For this
-example, as well as in many cases in the real world, we can live with this
-restriction, and this makes it easier to avoid DNS (assuming your setup is
-broken, eliminating one potential problem :).
-
-Whee, setting up nodes can be complicated at first, but you only have to
-do it once per network, and you can leave this boring task to the admins
-or end-users that want to use your stuff :)
-
-=head3 Registering The Receiver
+=head3 Registering the Receiver
 
 Coming back to our example, we have now introduced the basic purpose of
-L<AnyEvent::MP::Global> and C<initialise_node> and its use of profiles. We
+L<AnyEvent::MP::Global> and C<configure> and its use of profiles. We
 also set up our profiles for later use and now we will finally continue
 talking about the receiver.
 
@@ -340,15 +346,15 @@ Let's look at the next line(s):
 
 The C<port> function has already been discussed. It simply creates a new
 I<port> and returns the I<port ID>. The C<register> function, however,
-is new:  The first argument is the I<port ID> that we want to add to a
+is new: The first argument is the I<port ID> that we want to add to a
 I<global group>, and its second argument is the name of that I<global
 group>.
 
 You can choose the name of such a I<global group> freely (prefixing your
 package name is highly recommended!). The purpose of such a group is to
 store a set of I<port IDs>. This set is made available throughout the
-whole L<AnyEvent::MP> network, so that each node can see which ports
-belong to that group.
+L<AnyEvent::MP> network, so that each node can see which ports belong to
+that group.
 
 Later we will see how the sender looks for the ports in this I<global
 group> to send messages to them.
@@ -367,7 +373,7 @@ Ok, now let's take a look at the sender code:
    use AnyEvent::MP;
    use AnyEvent::MP::Global;
 
-   initialise_node "eg_simple_sender";
+   configure nodeid => "eg_sender", seeds => ["*:4040"];
 
    my $find_timer =
       AnyEvent->timer (after => 0, interval => 1, cb => sub {
@@ -380,9 +386,10 @@ Ok, now let's take a look at the sender code:
 
    AnyEvent->condvar->recv;
 
-It's even less code. The C<initialise_node> serves the same purpose as in
-the receiver, we just specify a different profile, the profile we set up
-without the binds.
+It's even less code. The C<configure> serves the same purpose as in the
+receiver, but instead of specifying binds we specify a list of seeds -
+which happens to be the same as the binds used by the receiver, which
+becomes our seed node.
 
 Next we set up a timer that repeatedly (every second) calls this chunk of
 code:
@@ -407,34 +414,644 @@ the receiver I<port(s)>.
 We then just send a message with a tag and the current time to every
 I<port> in the global group.
 
-=head3 Multiple Receivers
+=head3 Splitting Network Configuration and Application Code
 
-You can even run multiple receivers - the only problem is that they will
-use the same node ID. To avoid this problem, you can either not specify a
-profile name at all and rely on DNS and your POSIX node name, or you can
-use a special feature called "anonymous nodes":
+Ok, so far, this works. In the real world, however, the person configuring
+your application to run on a specific network (the end user or network
+administrator) is often different to the person coding the application.
 
-   aemp profile eg_simple_receiver setnodeid anon/
+Or to put it differently: the arguments passed to configure are usually
+provided not by the programmer, but by whoever is deploying the program.
 
-The special name C<anon/> will be replaced by a random string each time
-the node starts. This way you can start many receivers (they do not bind
-on a TCP port, so cnanot collide with each other), and all of them will
-receive the central time signal.
+To make this easy, AnyEvent::MP supports a simple configuration database,
+using profiles, which can be managed using the F<aemp> command-line
+utility (yes, this section is about the advanced tinkering we mentioned
+before).
 
-That's all for now - next time we will teach you about monitoring by
-writing a simple chat client and server :)
+When you change both programs above to simply call
+
+   configure;
+
+then AnyEvent::MP tries to look up a profile using the current node name
+in its configuration database, falling back to some global default.
+
+You can run "generic" nodes using the F<aemp> utility as well, and we will
+exploit this in the following way: we configure a profile "seed" and run
+a node using it, whose sole purpose is to be a seed node for our example
+programs.
+
+We bind the seed node to port 4040 on all interfaces:
+
+   aemp profile seed binds "*:4040"
+
+And we configure all nodes to use this as seed node (this only works when
+running on the same host, for multiple machines you would provide the IP
+address or hostname of the node running the seed), and use a random name
+(because we want to start multiple nodes on the same host):
+
+   aemp seeds "*:4040" nodeid anon/
+
+Then we run the seed node:
+
+   aemp run profile seed
+
+After that, we can start as many other nodes as we want, and they will all
+use our generic seed node to discover each other.
+
+In fact, starting many receivers nicely illustrates that the time sender
+can have multiple receivers.
+
+That's all for now - next we will teach you about monitoring by writing a
+simple chat client and server :)
+
+=head1 PART 2: Monitoring, Supervising, Exception Handling and Recovery
+
+That's a mouthful, so what does it mean? Our previous example is what one
+could call "very loosely coupled" - the sender doesn't care about whether
+there are any receivers, and the receivers do not care if there is any
+sender.
+
+This can work fine for simple services, but most real-world applications
+want to ensure that the side they are expecting to be there is actually
+there. Going one step further: most bigger real-world applications even
+want to ensure that if some component is missing, or has crashed, it will
+still be there, by recovering and restarting the service.
+
+AnyEvent::MP supports this by catching exceptions and network problems,
+and notifying interested parties of this.
+
+=head2 Exceptions, Network Errors and Monitors
+
+=head3 Exceptions
+
+Exceptions are handled on a per-port basis: receive callbacks are executed
+in a special context, the port-context, and code that throws an uncaught
+exception will cause the port to be C<kil>led. Killed ports are destroyed
+automatically (killing ports is the only way to free ports, incidentally).
+
+Ports can be monitored, even from a different host, and when a port is
+killed any entity monitoring it will be notified.
+
+Here is a simple example:
+
+  use AnyEvent::MP;
+
+  # create a port, it always dies
+  my $port = port { die "oops" };
+
+  # monitor it
+  mon $port, sub {
+     warn "$port was killed (with reason @_)";
+  };
+
+  # now send it some message, causing it to die:
+  snd $port;
+
+It first creates a port whose only action is to throw an exception,
+and the monitors it with the C<mon> function. Afterwards it sends it a
+message, causing it to die and call the monitoring callback:
+
+   anon/6WmIpj.a was killed (with reason die oops at xxx line 5.) at xxx line 9.
+
+The callback was actually passed two arguments: C<die> (to indicate it did
+throw an exception as opposed to, say, a network error) and the exception
+message itself.
+
+What happens when a port is killed before we have a chance to monitor
+it? Granted, this is highly unlikely in our example, but when you program
+in a network this can easily happen due to races between nodes.
+
+  use AnyEvent::MP;
+
+  my $port = port { die "oops" };
+
+  snd $port;
+
+  mon $port, sub {
+     warn "$port was killed (with reason @_)";
+  };
+
+This time we will get something like:
+
+   anon/zpX.a was killed (with reason no_such_port cannot monitor nonexistent port)
+
+Since the port was already gone, the kill reason is now C<no_such_port>
+with some descriptive (we hope) error message.
+
+In fact, the kill reason is usually some identifier as first argument
+and a human-readable error message as second argument, but can be about
+anything (it's a list) or even nothing - which is called a "normal" kill.
+
+You can kill ports manually using the C<kil> function, which will be
+treated like an error when any reason is specified:
+
+   kil $port, custom_error => "don't like your steenking face";
+
+And a clean kill without any reason arguments:
+  
+   kil $port;
+
+By now you probably wonder what this "normal" kill business is: A common
+idiom is to not specify a callback to C<mon>, but another port, such as
+C<$SELF>:
+
+   mon $port, $SELF;
+
+This basically means "monitor $port and kill me when it crashes". And a
+"normal" kill does not count as a crash. This way you can easily link
+ports together and make them crash together on errors (but allow you to
+remove a port silently).
+
+=head3 Port Context
+
+When code runs in an environment where C<$SELF> contains its own port ID
+and exceptions will be caught, it is said to run in a port context.
+
+Since AnyEvent::MP is event-based, it is not uncommon to register
+callbacks from C<rcv> handlers. As example, assume that the port receive
+handler wants to C<die> a second later, using C<after>:
+
+  my $port = port {
+     after 1, sub { die "oops" };
+  };
+
+Then you will find it does not work - when the after callback is executed,
+it does not run in port context anymore, so exceptions will not be caught.
+
+For these cases, AnyEvent::MP exports a special "close constructor" called
+C<psub>, which works just like perl's builtin C<sub>:
+
+  my $port = port {
+     after 1, psub { die "oops" };
+  };
+
+C<psub> stores C<$SELF> and returns a code reference. When the code
+reference is invoked, it will run the code block within the context of
+that port, so exception handling once more works as expected.
+
+=head3 Network Errors and the AEMP Guarantee
+
+I mentioned another important source of monitoring failures: network
+problems. When a node loses connection to another node, it will invoke all
+monitoring actions as if the port was killed, even if it is possible that
+the port still lives happily on another node (not being able to talk to a
+node means we have no clue what's going on with it, it could be crashed,
+but also still running without knowing we lost the connection).
+
+So another way to view monitors is "notify me when some of my messages
+couldn't be delivered". AEMP has a guarantee about message delivery to a
+port:  After starting a monitor, any message sent to a port will either
+be delivered, or, when it is lost, any further messages will also be lost
+until the monitoring action is invoked. After that, further messages
+I<might> get delivered again.
+
+This doesn't sound like a very big guarantee, but it is kind of the best
+you can get while staying sane: Specifically, it means that there will
+be no "holes" in the message sequence: all messages sent are delivered
+in order, without any missing in between, and when some were lost, you
+I<will> be notified of that, so you can take recovery action.
+
+=head3 Supervising
+
+Ok, so what is this crashing-everything-stuff going to make applications
+I<more> stable? Well in fact, the goal is not really to make them more
+stable, but to make them more resilient against actual errors and
+crashes. And this is not done by crashing I<everything>, but by crashing
+everything except a supervisor.
+
+A supervisor is simply some code that ensures that an application (or a
+part of it) is running, and if it crashes, is restarted properly.
+
+To show how to do all this we will create a simple chat server that can
+handle many chat clients. Both server and clients can be killed and
+restarted, and even crash, to some extent.
+
+=head2 Chatting, the Resilient Way
+
+Without further ado, here is the chat server (to run it, we assume the
+set-up explained earlier, with a separate F<aemp run> seed node):
+
+   use common::sense;
+   use AnyEvent::MP;
+   use AnyEvent::MP::Global;
+
+   configure;
+
+   my %clients;
+
+   sub msg {
+      print "relaying: $_[0]\n";
+      snd $_, $_[0]
+         for values %clients;
+   }
+
+   our $server = port;
+
+   rcv $server, join => sub {
+      my ($client, $nick) = @_;
+
+      $clients{$client} = $client;
+
+      mon $client, sub {
+         delete $clients{$client};
+         msg "$nick (quits, @_)";
+      };
+      msg "$nick (joins)";
+   };
+
+   rcv $server, privmsg => sub {
+      my ($nick, $msg) = @_;
+      msg "$nick: $msg";
+   };
+
+   AnyEvent::MP::Global::register $server, "eg_chat_server";
+
+   warn "server ready.\n";
+
+   AnyEvent->condvar->recv;
+
+Looks like a lot, but it is actually quite simple: after your usual
+preamble (this time we use common sense), we define a helper function that
+sends some message to every registered chat client:
+
+   sub msg {
+      print "relaying: $_[0]\n";
+      snd $_, $_[0]
+         for values %clients;
+   }
+
+The clients are stored in the hash C<%client>. Then we define a server
+port and install two receivers on it, C<join>, which is sent by clients
+to join the chat, and C<privmsg>, that clients use to send actual chat
+messages.
+
+C<join> is most complicated. It expects the client port and the nickname
+to be passed in the message, and registers the client in C<%clients>.
+
+   rcv $server, join => sub {
+      my ($client, $nick) = @_;
+
+      $clients{$client} = $client;
+
+The next step is to monitor the client. The monitoring action removes the
+client and sends a quit message with the error to all remaining clients.
+
+      mon $client, sub {
+         delete $clients{$client};
+         msg "$nick (quits, @_)";
+      };
+
+And finally, it creates a join message and sends it to all clients.
+
+      msg "$nick (joins)";
+   };
+
+The C<privmsg> callback simply broadcasts the message to all clients:
+
+   rcv $server, privmsg => sub {
+      my ($nick, $msg) = @_;
+      msg "$nick: $msg";
+   };
+
+And finally, the server registers itself in the server group, so that
+clients can find it:
+
+   AnyEvent::MP::Global::register $server, "eg_chat_server";
+
+Well, well... and where is this supervisor stuff? Well... we cheated,
+it's not there. To not overcomplicate the example, we only put it into
+the..... CLIENT!
+
+=head3 The Client, and a Supervisor!
+
+Again, here is the client, including supervisor, which makes it a bit
+longer:
+
+   use common::sense;
+   use AnyEvent::MP;
+   use AnyEvent::MP::Global;
+
+   my $nick = shift;
+
+   configure;
+
+   my ($client, $server);
+
+   sub server_connect {
+      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+         or return after 1, \&server_connect;
+
+      print "\rconnecting...\n";
+
+      $client = port { print "\r  \r@_\n> " };
+      mon $client, sub {
+         print "\rdisconnected @_\n";
+         &server_connect;
+      };
+
+      $server = $servernodes->[0];
+      snd $server, join => $client, $nick;
+      mon $server, $client;
+   }
+
+   server_connect;
+
+   my $w = AnyEvent->io (fh => 0, poll => 'r', cb => sub {
+      chomp (my $line = <STDIN>);
+      print "> ";
+      snd $server, privmsg => $nick, $line
+        if $server;
+   });
+
+   $| = 1;
+   print "> ";
+   AnyEvent->condvar->recv;
+
+The first thing the client does is to store the nick name (which is
+expected as the only command line argument) in C<$nick>, for further
+usage.
+
+The next relevant thing is... finally... the supervisor:
+
+   sub server_connect {
+      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+         or return after 1, \&server_connect;
+
+This looks up the server in the C<eg_chat_server> global group. If it
+cannot find it (which is likely when the node is just starting up),
+it will wait a second and then retry. This "wait a bit and retry"
+is an important pattern, as distributed programming means lots of
+things are going on asynchronously. In practise, one should use a more
+intelligent algorithm, to possibly warn after an excessive number of
+retries. Hopefully future versions of AnyEvent::MP will offer some
+predefined supervisors, for now you will have to code it on your own.
+
+Next it creates a local port for the server to send messages to, and
+monitors it. When the port is killed, it will print "disconnected" and
+tell the supervisor function to retry again.
+
+      $client = port { print "\r  \r@_\n> " };
+      mon $client, sub {
+         print "\rdisconnected @_\n";
+         &server_connect;
+      };
+
+Then everything is ready: the client will send a C<join> message with it's
+local port to the server, and start monitoring it:
+
+      $server = $servernodes->[0];
+      snd $server, join => $client, $nick;
+      mon $server, $client;
+   }
+
+The monitor will ensure that if the server crashes or goes away, the
+client will be killed as well. This tells the user that the client was
+disconnected, and will then start to connect the server again.
+
+The rest of the program deals with the boring details of actually invoking
+the supervisor function to start the whole client process and handle the
+actual terminal input, sending it to the server.
+
+You should now try to start the server and one or more clients in different
+terminal windows (and the seed node):
+
+   perl eg/chat_client nick1
+   perl eg/chat_client nick2
+   perl eg/chat_server
+   aemp run profile seed
+
+And then you can experiment with chatting, killing one or more clients, or
+stopping and restarting the server, to see the monitoring in action.
+
+The crucial point you should understand from this example is that
+monitoring is usually symmetric: when you monitor some other port,
+potentially on another node, that other port usually should monitor you,
+too, so when the connection dies, both ports get killed, or at least both
+sides can take corrective action. Exceptions are "servers" that serve
+multiple clients at once and might only wish to clean up, and supervisors,
+who of course should not normally get killed (unless they, too, have a
+supervisor).
+
+If you often think in object-oriented terms, then treat a port as an
+object, C<port> is the constructor, the receive callbacks set by C<rcv>
+act as methods, the C<kil> function becomes the explicit destructor and
+C<mon> installs a destructor hook. Unlike conventional object oriented
+programming, it can make sense to exchange ports more freely (for example,
+to monitor one port from another).
+
+There is ample room for improvement: the server should probably remember
+the nickname in the C<join> handler instead of expecting it in every chat
+message, it should probably monitor itself, and the client should not try
+to send any messages unless a server is actually connected.
+
+=head1 PART 3: TIMTOWTDI: Virtual Connections
+
+The chat system developed in the previous sections is very "traditional"
+in a way: you start some server(s) and some clients statically and they
+start talking to each other.
+
+Sometimes applications work more like "services": They can run on almost
+any node and talks to itself on other nodes. The L<AnyEvent::MP::Global>
+service for example monitors nodes joining the network and starts itself
+automatically on other nodes (if it isn't running already).
+
+A good way to design such applications is to put them into a module and
+create "virtual connections" to other nodes - we call this the "bridge
+head" method, because you start by creating a remote port (the bridge
+head) and from that you start to bootstrap your application.
+
+Since that sounds rather theoretical, let's redesign the chat server and
+client using this design method.
+
+Here is the server:
+
+   use common::sense;
+   use AnyEvent::MP;
+   use AnyEvent::MP::Global;
+
+   configure;
+
+   AnyEvent::MP::Global::register $NODE, "eg_chat_server2";
+
+   my %clients;
+
+   sub msg {
+      print "relaying: $_[0]\n";
+      snd $_, $_[0]
+         for values %clients;
+   }
+
+   sub client_connect {
+      my ($client, $nick) = @_;
+
+      mon $client;
+      mon $client, sub {
+         delete $clients{$client};
+         msg "$nick (quits, @_)";
+      };
+
+      $clients{$client} = $client;
+
+      msg "$nick (joins)";
+
+      rcv $SELF, sub { msg "$nick: $_[0]" };
+   }
+
+   warn "server ready.\n";
+
+   AnyEvent->condvar->recv;
+
+It starts not much different, except that this time, we register the node
+port and not any special port - the clients only want to know which node
+the server should be running, and in fact, they could also sue some kind
+of election mechanism or similar.
+
+The interesting change is that no port is created - the server is all
+code, and does nothing. All it does is define a function C<client_connect>
+that expects a client port and a nick as arguments. It then monitors the
+client port and binds a receive callback on C<$SELF> that expects messages
+to broadcast to all clients.
+
+The two C<mon> calls are a bit tricky - the first C<mon> is a shorthand
+for C<mon $client, $SELF>. The second does the normal "client has gone
+away" clean-up action. Both could actually be rolled into one C<mon>
+action.
+
+C<$SELF> is a good hint that something interetsing is going on. And
+indeed, when looking at the client, there is a new function, C<spawn>:
+
+   use common::sense;
+   use AnyEvent::MP;
+   use AnyEvent::MP::Global;
+
+   my $nick = shift;
+
+   configure;
+
+   $| = 1;
+
+   my $port = port;
+
+   my ($client, $server);
+
+   sub server_connect {
+      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server2"
+         or return after 1, \&server_connect;
+
+      print "\rconnecting...\n";
+
+      $client = port { print "\r  \r@_\n> " };
+      mon $client, sub {
+         print "\rdisconnected @_\n";
+         &server_connect;
+      };
+
+      $server = spawn $servernodes->[0], "::client_connect", $client, $nick;
+      mon $server, $client;
+   }
+
+   server_connect;
+
+   my $w = AnyEvent->io (fh => 0, poll => 'r', cb => sub {
+      chomp (my $line = <STDIN>);
+      print "> ";
+      snd $server, $line
+        if $server;
+   });
+
+   print "> ";
+   AnyEvent->condvar->recv;
+
+The client is quite similar to the previous one, but instead of contacting
+the server port (which no longer exists), it C<spawn>s a new port on the
+server I<node>:
+
+      $server = spawn $servernodes->[0], "::client_connect", $client, $nick;
+      mon $server, $client;
+
+And of course immediately monitors it. The C<spawn> function creates a new
+port on a remote node and returns its port ID. After creating the port it
+calls a function on the remote node, passing any remaining arguments to
+it, and - most importantly - within the context of the new port. The init
+function can reside in a module (actually it normally I<should> reside
+in a module) - AnyEvent::MP will automatically load the module if the
+function isn't defined.
+
+The C<spawn> function returns immediately, which means you can immediately
+send messages to the port, long before the remote node has even heard
+of our request to create a port on it. In fact, the remote node might
+not even be running. Despite these troubling facts, everything should
+work just fine: if the node isn't running (or the init function throws an
+exception), then the monitor will trigger because the port doesn't exist.
+
+If the spawn message gets delivered, but the monitoring message is not
+because of network problems (monitoring, after all, is implemented by
+passing a message, and messages can get lost), then this connection loss
+will eventually trigger the monitoring action. On the remote node (which
+reciprocally monitors the client) the port will also be cleaned up on
+connection loss. When the node comes up and our monitoring message can be
+delivered it will instantly fail because the port has been cleaned up in
+the meantime.
+
+If your head is spinning by now, that's fine - just keep in mind, after
+creating a port, monitor "the other side" from it, and all will be cleaned
+up just fine.
+
+=head2 Services
+
+Above it was mentioned that C<spawn> automatically loads modules, and this
+can be exploited in various ways.
+
+Assume for a moment you put the server into a file called
+F<mymod/chatserver.pm> reachable from the current directory. Then you
+could run a node there with:
+
+   aemp run
+
+The other nodes could C<spawn> the server by using
+C<mymod::chatserver::client_connect> as init function.
+
+Likewise, when you have some service that starts automatically (similar to
+AnyEvent::MP::Global), then you can configure this service statically:
+
+   aemp profile mysrvnode services mymod::service::
+   aemp run profile mysrvnode
+
+And the module will automatically be started in the node, as specifying a
+module name (with C<::>-suffix) will simply load the module, which is then
+free to do whatever it wants.
+
+Of course, you can also do it in the much more standard way by writing
+a module (e.g. C<BK::Backend::IRC>), installing it as part of a module
+distribution and then configure nodes, for example, if I want to run the
+Bummskraut IRC backend on a machine named "ruth", I could do this:
+
+   aemp profile ruth addservice BK::Backend::IRC::
+
+And any F<aemp run> on that host will automaticlaly have the bummskraut
+irc backend running.
+
+That's plenty of possibilities you can use - it's all up to you how you
+structure your application.
+
+=head1 THE END
+
+This is the end of this introduction, but hopefully not the end of
+your career als AEMP user. I hope the tutorial was enough to make the
+basic concepts clear. Keep in mind that distributed programming is not
+completely trivial, that AnyEvent::MP is still in it's infancy, and I hope
+it will be useful to create exciting new applications.
 
 =head1 SEE ALSO
-
-L<AnyEvent>
-
-L<AnyEvent::Handle>
 
 L<AnyEvent::MP>
 
 L<AnyEvent::MP::Global>
 
+L<AnyEvent>
+
 =head1 AUTHOR
 
   Robin Redeker <elmex@ta-sa.org>
+  Marc Lehmann <schmorp@schmorp.de>
 

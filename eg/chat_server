@@ -7,7 +7,7 @@ use common::sense;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
-initialise_node;
+configure;
 
 my %clients;
 

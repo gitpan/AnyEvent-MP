@@ -9,11 +9,9 @@ use AnyEvent::MP::Global;
 
 my $nick = shift;
 
-initialise_node "anon/";
+configure;
 
 $| = 1;
-
-my $port = port;
 
 my ($client, $server);
 
@@ -23,14 +21,13 @@ sub server_connect {
 
    print "\rconnecting...\n";
 
-   $server = $servernodes->[0];
-
    $client = port { print "\r  \r@_\n> " };
    mon $client, sub {
       print "\rdisconnected @_\n";
       &server_connect;
    };
 
+   $server = $servernodes->[0];
    snd $server, join => $client, $nick;
    mon $server, $client;
 }

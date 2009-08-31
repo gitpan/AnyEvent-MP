@@ -1,7 +1,24 @@
 Revision history for AnyEvent::MP
 
-TODO: node-down = node-nuke
-TODO: memleaks?
+TODO: global protocol fix?
+TODO: some avoid to connetc to all seeds at the same time
+TODO: testsuite
+TODO: make more parameters configurable: framing, tls, auth, timeouts
+
+0.95 Mon Aug 31 22:03:55 CEST 2009
+	- rename initialise_node to configure and accepts key => value
+          pairs for configuration.
+	- give aemp a full manpage.
+	- bin/aemp now expects comma-separated lists and supports multiple
+          subcommands.
+        - new aemp eval subcommand.
+        - new aemp parent subcommand.
+        - nodes get freed when no longer needed.
+        - support "*" hostname to specify all local interface addresses
+          (without localhost etc.).
+        - support "*" port to specify a dynamically-assigned port (which
+          is the default now).
+        - fix per-transport memory leak.
 
 0.9  Sat Aug 29 18:47:45 CEST 2009
 	- tutorial was updated to reflect the current API, but

@@ -3,7 +3,7 @@ use AnyEvent;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
-initialise_node "eg_simple_receiver";
+initialise_node;
 
 my $port = port;
 

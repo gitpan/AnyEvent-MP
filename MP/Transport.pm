@@ -52,8 +52,8 @@ Defaults for peerhost, peerport and fh are provided.
 
 =cut
 
-sub mp_server($$@) {
-   my ($host, $port, @args) = @_;
+sub mp_server($$;%) {
+   my ($host, $port, %arg) = @_;
 
    AnyEvent::Socket::tcp_server $host, $port, sub {
       my ($fh, $host, $port) = @_;
@@ -62,10 +62,10 @@ sub mp_server($$@) {
          fh       => $fh,
          peerhost => $host,
          peerport => $port,
-         @args,
+         %arg,
       ;
       $tp->{keepalive} = $tp;
-   }
+   }, delete $arg{prepare}
 }
 
 =item $guard = mp_connect $host, $port, <constructor-args>, $cb->($transport)
@@ -78,7 +78,7 @@ sub mp_connect {
 
    my $state;
 
-   $state = AnyEvent::Socket::tcp_connect $host, $port, sub {
+   $state = AnyEvent::Socket::tcp_connect $host, $port, my$x=sub {
       my ($fh, $nhost, $nport) = @_;
 
       return $release->() unless $fh;
@@ -301,11 +301,12 @@ sub new {
                $self->{s_framing} = $s_framing;
 
                $hdl->rbuf_max (undef);
-               my $queue = delete $self->{queue}; # we are connected
 
                $self->{hdl}->rtimeout ($self->{remote_greeting}{timeout});
                $self->{hdl}->wtimeout ($self->{timeout} - LATENCY);
                $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
+
+               my $queue = delete $self->{queue}; # we are connected
 
                $self->connected;
 
@@ -315,14 +316,16 @@ sub new {
 
                # receive handling
                my $src_node = $self->{node};
-
-               my $rmsg; $rmsg = sub {
+               my $rmsg; $rmsg = $self->{rmsg} = sub {
                   $_[0]->push_read ($r_framing => $rmsg);
 
                   local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
                   AnyEvent::MP::Kernel::_inject (@{ $_[1] });
                };
                $hdl->push_read ($r_framing => $rmsg);
+
+               Scalar::Util::weaken $rmsg;
+               Scalar::Util::weaken $src_node;
             });
          });
       });

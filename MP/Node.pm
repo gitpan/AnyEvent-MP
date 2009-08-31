@@ -60,7 +60,8 @@ sub transport_reset {
    };
 }
 
-# called only after successful handshake
+# called each time we fail to establish a connection,
+# or the existing connection failed
 sub transport_error {
    my ($self, @reason) = @_;
 
@@ -78,6 +79,10 @@ sub transport_error {
 
    AnyEvent::MP::Kernel::_inject_nodeevent ($self, 0, @reason)
       unless $no_transport;
+
+   # if we are here and are idle, we nuke ourselves
+   delete $AnyEvent::MP::Kernel::NODE{$self->{id}}
+      unless $self->{transport} || $self->{connect_to};
 }
 
 # called after handshake was successful
@@ -113,42 +118,43 @@ sub connect {
 
    Scalar::Util::weaken $self;
 
-   $self->{connect_to} ||= AE::timer
-      $AnyEvent::MP::Config::CFG{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT,
-      0,
-      sub {
-         $self->transport_error (transport_error => $self->{id}, "unable to connect");
-      };
+   my $monitor = $AnyEvent::MP::Config::CFG{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT;
+
+   $self->{connect_to} ||= AE::timer $monitor, 0, sub {
+      $self->transport_error (transport_error => $self->{id}, "unable to connect");
+   };
 
    return unless @addresses;
+   return if $self->{connect_w};
 
    $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} with [@addresses]");
 
-   unless ($self->{connect_w}) {
-      my @endpoints;
+   my $interval = $AnyEvent::MP::Config::CFG{connect_interval} || $AnyEvent::MP::Kernel::CONNECT_INTERVAL;
 
-      $self->{connect_w} = AE::timer
-         rand,
-         $AnyEvent::MP::Config::CFG{connect_interval} || $AnyEvent::MP::Kernel::CONNECT_INTERVAL,
-         sub {
-            @endpoints = @addresses
-               unless @endpoints;
+   $interval = ($monitor - $interval) / @addresses
+      if ($monitor - $interval) / @addresses < $interval;
 
-            my $endpoint = shift @endpoints;
+   $interval = 0.4 if $interval < 0.4;
 
-            $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} at $endpoint");
+   my @endpoints;
 
-            $self->{trial}{$endpoint} ||= do {
-               my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
-                  or return $AnyEvent::MP::Kernel::WARN->(1, "$self->{id}: not a resolved node reference.");
+   $self->{connect_w} = AE::timer rand, $interval, sub {
+      @endpoints = @addresses
+         unless @endpoints;
 
-               AnyEvent::MP::Transport::mp_connect
-                  $host, $port,
-                  sub { delete $self->{trial}{$endpoint} },
-            };
-         }
-      ;
-   }
+      my $endpoint = shift @endpoints;
+
+      $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} at $endpoint");
+
+      $self->{trial}{$endpoint} ||= do {
+         my ($host, $port) = AnyEvent::Socket::parse_hostport $endpoint
+            or return $AnyEvent::MP::Kernel::WARN->(1, "$self->{id}: not a resolved node reference.");
+
+         AnyEvent::MP::Transport::mp_connect
+            $host, $port,
+            sub { delete $self->{trial}{$endpoint} },
+      };
+   };
 }
 
 sub kill {

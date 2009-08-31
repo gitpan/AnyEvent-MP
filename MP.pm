@@ -6,16 +6,15 @@ AnyEvent::MP - multi-processing/message-passing framework
 
    use AnyEvent::MP;
 
-   $NODE      # contains this node's noderef
-   NODE       # returns this node's noderef
-   NODE $port # returns the noderef of the port
+   $NODE      # contains this node's node ID
+   NODE       # returns this node's node ID
 
    $SELF      # receiving/own port id in rcv callbacks
 
    # initialise the node so it can send/receive messages
-   initialise_node;
+   configure;
 
-   # ports are message endpoints
+   # ports are message destinations
 
    # sending messages
    snd $port, type => data...;
@@ -23,12 +22,12 @@ AnyEvent::MP - multi-processing/message-passing framework
    snd @msg_with_first_element_being_a_port;
 
    # creating/using ports, the simple way
-   my $simple_port = port { my @msg = @_; 0 };
+   my $simple_port = port { my @msg = @_ };
 
    # creating/using ports, tagged message matching
    my $port = port;
-   rcv $port, ping => sub { snd $_[0], "pong"; 0 };
-   rcv $port, pong => sub { warn "pong received\n"; 0 };
+   rcv $port, ping => sub { snd $_[0], "pong" };
+   rcv $port, pong => sub { warn "pong received\n" };
 
    # create a port on another node
    my $port = spawn $node, $initfunc, @initdata;
@@ -40,12 +39,11 @@ AnyEvent::MP - multi-processing/message-passing framework
 
 =head1 CURRENT STATUS
 
-   AnyEvent::MP            - stable API, should work
-   AnyEvent::MP::Intro     - outdated
-   AnyEvent::MP::Kernel    - mostly stable
-   AnyEvent::MP::Global    - mostly stable
-   AnyEvent::MP::Node      - mostly stable, but internal anyways
-   AnyEvent::MP::Transport - mostly stable, but internal anyways
+   bin/aemp                - stable.
+   AnyEvent::MP            - stable API, should work.
+   AnyEvent::MP::Intro     - epxlains most concepts.
+   AnyEvent::MP::Kernel    - mostly stable.
+   AnyEvent::MP::Global    - stable API, protocol not yet final.
 
    stay tuned.
 
@@ -58,8 +56,6 @@ on the same or other hosts, and you can supervise entities remotely.
 
 For an introduction to this module family, see the L<AnyEvent::MP::Intro>
 manual page and the examples under F<eg/>.
-
-At the moment, this module family is a bit underdocumented.
 
 =head1 CONCEPTS
 
@@ -141,7 +137,7 @@ our $VERSION = $AnyEvent::MP::Kernel::VERSION;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
-   initialise_node
+   configure
    snd rcv mon mon_guard kil reg psub spawn
    port
 );
@@ -158,31 +154,48 @@ sub _self_die() {
 
 The C<NODE> function returns, and the C<$NODE> variable contains, the node
 ID of the node running in the current process. This value is initialised by
-a call to C<initialise_node>.
+a call to C<configure>.
 
 =item $nodeid = node_of $port
 
 Extracts and returns the node ID from a port ID or a node ID.
 
-=item initialise_node $profile_name
+=item configure key => value...
 
 Before a node can talk to other nodes on the network (i.e. enter
-"distributed mode") it has to initialise itself - the minimum a node needs
+"distributed mode") it has to configure itself - the minimum a node needs
 to know is its own name, and optionally it should know the addresses of
 some other nodes in the network to discover other nodes.
 
-This function initialises a node - it must be called exactly once (or
+This function configures a node - it must be called exactly once (or
 never) before calling other AnyEvent::MP functions.
 
-The first argument is a profile name. If it is C<undef> or missing, then
-the current nodename will be used instead (i.e. F<uname -n>).
+=over 4
 
-The function then looks up the profile in the aemp configuration (see the
-L<aemp> commandline utility).
+=item step 1, gathering configuration from profiles
+
+The function first looks up a profile in the aemp configuration (see the
+L<aemp> commandline utility). The profile name can be specified via the
+named C<profile> parameter. If it is missing, then the nodename (F<uname
+-n>) will be used as profile name.
+
+The profile data is then gathered as follows:
+
+First, all remaining key => value pairs (all of which are conviniently
+undocumented at the moment) will be interpreted as configuration
+data. Then they will be overwritten by any values specified in the global
+default configuration (see the F<aemp> utility), then the chain of
+profiles chosen by the profile name (and any C<parent> attributes).
+
+That means that the values specified in the profile have highest priority
+and the values specified directly via C<configure> have lowest priority,
+and can only be used to specify defaults.
 
 If the profile specifies a node ID, then this will become the node ID of
 this process. If not, then the profile name will be used as node ID. The
 special node ID of C<anon/> will be replaced by a random node ID.
+
+=item step 2, bind listener sockets
 
 The next step is to look up the binds in the profile, followed by binding
 aemp protocol listeners on all binds specified (it is possible and valid
@@ -190,30 +203,43 @@ to have no binds, meaning that the node cannot be contacted form the
 outside. This means the node cannot talk to other nodes that also have no
 binds, but it can still talk to all "normal" nodes).
 
-If the profile does not specify a binds list, then the node ID will be
-treated as if it were of the form C<host:port>, which will be resolved and
-used as binds list.
+If the profile does not specify a binds list, then a default of C<*> is
+used, meaning the node will bind on a dynamically-assigned port on every
+local IP address it finds.
 
-Lastly, the seeds list from the profile is passed to the
+=item step 3, connect to seed nodes
+
+As the last step, the seeds list from the profile is passed to the
 L<AnyEvent::MP::Global> module, which will then use it to keep
-connectivity with at least on of those seed nodes at any point in time.
+connectivity with at least one node at any point in time.
 
-Example: become a distributed node listening on the guessed noderef, or
-the one specified via C<aemp> for the current node. This should be the
-most common form of invocation for "daemon"-type nodes.
+=back
 
-   initialise_node;
+Example: become a distributed node using the locla node name as profile.
+This should be the most common form of invocation for "daemon"-type nodes.
+
+   configure
 
 Example: become an anonymous node. This form is often used for commandline
 clients.
 
-   initialise_node "anon/";
+   configure nodeid => "anon/";
 
-Example: become a distributed node. If there is no profile of the given
-name, or no binds list was specified, resolve C<localhost:4044> and bind
-on the resulting addresses.
+Example: configure a node using a profile called seed, which si suitable
+for a seed node as it binds on all local addresses on a fixed port (4040,
+customary for aemp).
 
-   initialise_node "localhost:4044";
+   # use the aemp commandline utility
+   # aemp profile seed nodeid anon/ binds '*:4040'
+
+   # then use it
+   configure profile => "seed";
+
+   # or simply use aemp from the shell again:
+   # aemp run profile seed
+
+   # or provide a nicer-to-remember nodeid
+   # aemp run profile seed nodeid "$(hostname)"
 
 =item $SELF
 
@@ -345,9 +371,9 @@ Example: temporarily register a rcv callback for a tag matching some port
 
 sub rcv($@) {
    my $port = shift;
-   my ($noderef, $portid) = split /#/, $port, 2;
+   my ($nodeid, $portid) = split /#/, $port, 2;
 
-   $NODE{$noderef} == $NODE{""}
+   $NODE{$nodeid} == $NODE{""}
       or Carp::croak "$port: rcv can only be called on local ports, caught";
 
    while (@_) {
@@ -497,9 +523,9 @@ Example: send us a restart message when another C<$port> is killed.
 =cut
 
 sub mon {
-   my ($noderef, $port) = split /#/, shift, 2;
+   my ($nodeid, $port) = split /#/, shift, 2;
 
-   my $node = $NODE{$noderef} || add_node $noderef;
+   my $node = $NODE{$nodeid} || add_node $nodeid;
 
    my $cb = @_ ? shift : $SELF || Carp::croak 'mon: called with one argument only, but $SELF not set,';
 
@@ -623,16 +649,16 @@ sub _spawn {
 }
 
 sub spawn(@) {
-   my ($noderef, undef) = split /#/, shift, 2;
+   my ($nodeid, undef) = split /#/, shift, 2;
 
    my $id = "$RUNIQ." . $ID++;
 
    $_[0] =~ /::/
       or Carp::croak "spawn init function must be a fully-qualified name, caught";
 
-   snd_to_func $noderef, "AnyEvent::MP::_spawn" => $id, @_;
+   snd_to_func $nodeid, "AnyEvent::MP::_spawn" => $id, @_;
 
-   "$noderef#$id"
+   "$nodeid#$id"
 }
 
 =item after $timeout, @msg

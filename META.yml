@@ -11,7 +11,7 @@
    },
    "generated_by" : "ExtUtils::MakeMaker version 6.50",
    "distribution_type" : "module",
-   "version" : "0.9",
+   "version" : "0.95",
    "name" : "AnyEvent-MP",
    "author" : [],
    "license" : "unknown",
@@ -20,11 +20,12 @@
    },
    "requires" : {
       "AnyEvent" : 5.11,
-      "MIME::Base64" : 3,
+      "Net::Interface" : 1.011,
+      "JSON::XS" : 2.25,
       "Digest::HMAC_MD6" : 0,
+      "MIME::Base64" : 3,
       "AnyEvent::Watchdog" : 0.1,
       "common::sense" : 0,
-      "JSON::XS" : 2.25,
       "Digest::MD6" : 0
    },
    "abstract" : null,

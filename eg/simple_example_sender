@@ -3,7 +3,7 @@ use AnyEvent;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
-initialise_node "eg_simple_sender";
+initialise_node;
 
 my $find_timer =
    AnyEvent->timer (after => 0, interval => 1, cb => sub {

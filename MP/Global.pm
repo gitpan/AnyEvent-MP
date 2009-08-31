@@ -199,7 +199,7 @@ sub start_node {
    };
 
    snd $port, addr => $AnyEvent::MP::Kernel::LISTENER;
-   snd $port, connect_nodes => \%addr if %addr;
+   snd $port, nodes => \%addr if %addr;
    snd $port, set => \%lreg if %lreg;
 }
 
@@ -219,17 +219,17 @@ sub connect {
          # to help listener-less nodes, we broadcast new addresses to them unconditionally
          #TODO: should be done by a node finding out about a listener-less one
          if (@$addresses) {
-            for my $other (values %AnyEvent::MP::NODE) {
+            for my $other (values %AnyEvent::MP::Kernel::NODE) {
                if ($other->{transport}) {
                   if ($addr{$other->{id}} && !@{ $addr{$other->{id}} }) {
                      $AnyEvent::MP::Kernel::WARN->(9, "helping $other->{id} to find $node.");
-                     snd $port{$other->{id}}, connect_nodes => { $node => $addresses };
+                     snd $port{$other->{id}}, nodes => { $node => $addresses };
                   }
                }
             }
          }
       },
-      connect_nodes => sub {
+      nodes => sub {
          my ($kv) = @_;
 
          use JSON::XS;#d#
@@ -242,11 +242,11 @@ sub connect {
             start_node $id;
          }
       },
-      find_node => sub {
+      find => sub {
          my ($othernode) = @_;
 
          $AnyEvent::MP::Kernel::WARN->(9, "$node asked us to find $othernode.");
-         snd $port{$node}, connect_nodes => { $othernode => $addr{$othernode} }
+         snd $port{$node}, nodes => { $othernode => $addr{$othernode} }
             if $addr{$othernode};
       },
       set => sub {
@@ -271,7 +271,7 @@ sub mon_node {
       # forget about the node
       delete $addr{$node};
       # ask other nodes if they know the node
-      snd $_, find_node => $node
+      snd $_, find => $node
          for values %port;
    }
    #warn "node<$node,$is_up>\n";#d#

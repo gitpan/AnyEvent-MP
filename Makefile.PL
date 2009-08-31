@@ -18,6 +18,7 @@ my $mm = MM->new({
        Digest::HMAC_MD6   => 0,
        MIME::Base64       => 3,
        JSON::XS           => 2.25,
+       Net::Interface     => 1.011,
        common::sense      => 0,
     },
 });

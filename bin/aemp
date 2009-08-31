@@ -1,4 +1,4 @@
-#!/opt/bin/perl
+#!/OPT/BIn/perl
 
 =head1 NAME
 
@@ -9,79 +9,399 @@
    aemp command args...
 
    # protocol commands
-   aemp snd <port> <arg...>     # send a message
-   aemp mon <port>              # wait till port is killed
-   aemp rpc <port> <arg...>     # send message, append reply
+   aemp snd <port> <arg...>      # send a message
+   aemp mon <port>               # wait till port is killed
+   aemp rpc <port> <arg...>      # send message, append reply
+   aemp eval <node> <expr...>    # evaluate expression
+   aemp trace <nodeid>           # trace the network topology
 
    # run a node
-   aemp run initialise_args...  # run a node
+   aemp run configure_args...    # run a node
 
-   # node configuration: protocol endpoints
-   aemp setnodeid <nodeid>      # configure the real node id
-   aemp delnodeid               # reset node id to default (= inherit)
+   # node configuration: node ID
+   aemp setnodeid <nodeid>       # configure the real node id
+   aemp delnodeid                # reset node id to default (= inherit)
 
    # node configuration: secret
-   aemp gensecret               # generate a random shared secret
-   aemp setsecret <secret>      # set the shared secret
-   aemp delsecret               # remove the secret (= inherit)
+   aemp gensecret                # generate a random shared secret
+   aemp setsecret <secret>       # set the shared secret
+   aemp delsecret                # remove the secret (= inherit)
 
    # node configuration: TLS
-   aemp gencert                 # generate a random certificate
-   aemp setcert <file>          # set a certificate (key.pem + certificate.pem)
-   aemp delcert                 # remove certificate (= inherit)
+   aemp gencert                  # generate a random certificate
+   aemp setcert <file>           # set a certificate (key.pem + certificate.pem)
+   aemp delcert                  # remove certificate (= inherit)
 
    # node configuration: seed addresses for bootstrapping
-   aemp setseeds <host:port>... # set seeds
-   aemp delseeds                # clear all seeds (= inherit)
-   aemp addseed <host:port>     # add a seed
-   aemp delseed <host:port>     # remove seed
+   aemp setseeds <host:port>,... # set seeds
+   aemp delseeds                 # clear all seeds (= inherit)
+   aemp addseed <host:port>      # add a seed
+   aemp delseed <host:port>      # remove seed
 
    # node configuration: bind addresses
-   aemp setbinds <host:port>... # set binds
-   aemp delbinds                # clear all binds (= inherit)
-   aemp addbind <host:port>     # add a bind address
-   aemp delbind <host:port>     # remove a bind address
+   aemp setbinds <host:port>,... # set binds
+   aemp delbinds                 # clear all binds (= inherit)
+   aemp addbind <host:port>      # add a bind address
+   aemp delbind <host:port>      # remove a bind address
 
    # node configuration: services
-   aemp setservices initfunc... # set service functions
-   aemp delservices             # clear all services (= inherit)
-   aemp addservice <initfunc>   # add an instance of a service
-   aemp delservice <initfunc>   # delete one instance of a service
+   aemp setservices initfunc,... # set service functions
+   aemp delservices              # clear all services (= inherit)
+   aemp addservice <initfunc>    # add an instance of a service
+   aemp delservice <initfunc>    # delete one instance of a service
 
    # profile-specific configuration
    aemp profile <name> <command>... # apply command to profile only
-   aemp delprofile <name>       # eradicate the named profile
-   aemp showprofile <name>      # display given profile
-   aemp showconfig <name>       # display effective config
-
-   # debugging
-   aemp trace <nodeid>          # trace the network topology
+   aemp setparent <name>         # specify a parent profile
+   aemp delparent                # clear parent again
+   aemp delprofile <name>        # eradicate the named profile
+   aemp showprofile <name>       # display given profile
+   aemp showconfig <name> ...    # display effective config
 
 =head1 DESCRIPTION
 
 With aemp you can configure various aspects of AnyEvent::MP and its
-protocol.
+protocol, send various messages and even run a node.
 
-You can also start a "default node", a node that only depends on the
-static configuration.
+The F<aemp> utility works like F<cvs>, F<svn> or other commands: the first
+argument defines which operation (subcommand) is requested, after which
+arguments for this operation are expected. When a subcommand does not eat
+all remaining arguments, the remaining arguments will again be interpreted
+as subcommand and so on.
+
+This means you can chain multiple commands, which is handy for profile
+configuration, e.g.:
+
+   aemp gensecret profile xyzzy binds 4040,4041 nodeid anon/
+
+Please note that all C<setxxx> subcommands have an alias without the
+C<set> prefix.
+
+=head2 RUNNING A NODE
+
+This can be used to run a node - together with some services, this makes
+it unnecesary to write any wrapper programs.
+
+=over 4
+
+=item run <profile> <...>
+
+Runs a node by calling C<AnyEvent::MP::Kernel::configure> with the given
+arguments. The node runs under L<AnyEvent::Watchdog>, can be restarted
+(and autorestarted, see the L<AnyEvent::Watchdog> manual).
+
+Care has been taken to load (almost) no modules other than
+L<AnyEvent::Watchdog> and the modules it loads, so everything (including
+the L<AnyEvent::MP> modules themselves) will be freshly loaded on restart,
+which makes upgrading everything except the perl binary easy.
+
+=back
+
+=head2 PROTOCOL COMMANDS
+
+These commands actually communicate with other nodes. They all use a node
+profile name of C<aemp> (specifying a dfeault node ID of C<anon/> and a
+binds list containing C<*:*> only).
+
+They all use a timeout of five seconds, after which they give up.
+
+=over 4
+
+=item snd <port> <arguments...>
+
+Simply send a message to the given port - where you get the port ID from
+is your problem.
+
+Exits after ensuring that the message has been delivered to its node.
+
+Most useful to take avdantage of some undocumented functionality inside
+nodes, such as node ports being able to call any method:
+
+   aemp snd doomed AnyEvent::Watchdog::restart 1
+
+=item rpc <port> <arg...>
+
+Like F<aemp snd>, but appends a local reply port to the message and waits
+for a message to it.
+
+Any return values will be JSON-encoded and printed separated by commas
+(kind of like a JSON array without []-brackets).
+
+Example: ask the (undocumented) time service of a node for it'S current
+time.
+
+   aemp rpc mynode time
+
+=item mon <port>
+
+Monitors the port and exits when it's monitorign callback is called. Most
+useful to monitor node ports.
+
+Example: monitor some node.
+
+   aemp mon doomed
+
+=item eval <node> <expr...>
+
+Joins all remaining arguments into a string and evaluates it on the given
+node. Return values are handled as with F<aemp rpc>.
+
+Example: find the unix process ID of the node called posicks.
+
+   aemp eval posicks '$$'
+
+=item trace <node>
+
+Asks the given node for all currently connected nodes, then asks those
+nodes for the same, thus tracing all node connections.
+
+=cut
+
+=head2 CONFIGURATION/NODE ID/SECRET/CERTIFICATE
+
+These commands deal with rather basic settings, the node ID, the shared
+secret and the TLS certificate.
+
+=over 4
+
+=item setnodeid <nodeid>
+
+Set the node ID to the given string.
+
+=item delnodeid
+
+Removes the node ID again, which means it is inherited again from it's
+parent profile, or stays unset.
+
+=item gensecret
+
+Generates a random shared secret and sets it. The shared secret is used to
+authenticate nodes to each other when TLS is not required.
+
+=item setsecret <secret>
+
+Sets the shared secret tot he given string, which can be anything.
+
+=item delsecret
+
+Removes the shared secret again, which means it is inherited again from
+it's parent profile, or stays unset.
+
+=item gencert
+
+Generates a self-signed certficate and key, and sets it. This works
+similarly to a shared secret: when all nodes have it, TLS will be used to
+authenticate and encrypt all traffic.
+
+=item setcert <file>
+
+Set a node certificate (and optionally any CA certificates) from the given
+file. The file must contain the key, followed by the certificate, followed
+by any CA certificates you want to trust, all in PEM format.
+
+See L<AnyEvent::TLS> for some more details - this sets the C<cert> and
+C<ca_cert> options.
+
+=item delcert
+
+Removes the certificate(s) again, which means it is inherited again from
+it's parent profile, or stays unset.
+
+=back
+
+=head2 CONFIGURATION/SEEDS
+
+To discover the network you have to specify some seed addresses, which are
+basically C<host:port> pairs where you expect some long-running nodes. It
+does no harm to have a node as its own seed (they will eventually be
+ignored).
+
+=item setseeds <host:port>,...
+
+Sets or replaces the list of seeds, which must be specified as a
+comma-separated list of C<host:port> pairs. The C<host> can be a hostname,
+an IP address, or C<*> to signify all local host addresses. If the
+C<:port> is omitted, then the default port of C<4040> is assumed.
+
+An empty list is allowed.
+
+Example: use C<doomed> with default port as only seednode.
+
+   aemp setseeds doomed
+
+=item delseeds
+
+Removes the seed list again, which means it is inherited again from it's
+parent profile, or stays unset.
+
+=item addseed <host:port>
+
+Adds a single seed address.
+
+=item delseed <host:port>
+
+Deletes the given seed address, if it exists.
+
+=back
+
+=head2 CONFIGURATION/BINDS
+
+To be able to be reached from other nodes, a node must I<bind> itself
+to some listening socket(s). The list of these can either bs specified
+manually, or AnyEvent::MP can guess them. Nodes without any binds are
+possible to some extent.
+
+=over 4
+
+=item setbinds <host:port>,...
+
+Sets the list of bind addresses explicitly - see the F<aemp setseeds>
+command for the exact syntax. In addition, a value of C<0> for the port
+means to use a dynamically-assigned port.
+
+Note that the C<*>, C<*:*> or C<*:port> values are very useful here.
+
+Example: bind on the default port (4040) on all local interfaces.
+
+   aemp setbinds "*"
+
+Example: bind on a random port on all local interfaces.
+
+   aemp setbinds "*:*"
+
+Example: resolve "doomed.mydomain" and try to bind on port C<4040> of all
+IP addressess returned.
+
+   aep setbinds doomed.mydomain
+
+=item delbinds
+
+Removes the bind list again, which means it is inherited again from it's
+parent profile, or stays unset.
+
+=item addbind <host:port>
+
+Adds a single bind address.
+
+=item delbind <host:port>
+
+Deletes the given bind address, if it exists.
+
+=back
+
+=head2 CONFIGURATION/SERVICES
+
+Services are modules (or functions) that are automatically loaded (or
+executed) when a node starts. They are especially useful when used in
+conjunction with F<aemp run>, to configure which services a node should
+run.
+
+=over 4
+
+=item setservices <initfunc>...
+
+Sets or replaces the list of services, which must be specified as a
+comma-separated list.
+
+Each entry in the list is interpreted as either a module name to
+load (when it ends with C<::>) or a function to call (all other
+cases). The algorithm to find the function is the same as used for C<<
+L<AnyEvent::MP>::spawn >>.
+
+=item delservices
+
+Removes the service list again, which means it is inherited again from
+it's parent profile, or stays unset.
+
+=item addservice <initfunc>
+
+Adds a single service.
+
+=item delservice <initfunc>
+
+Deletes the given service, if it exists.
+
+=back
+
+=head2 CONFIGURATION/PROFILE MANAGEMENT
+
+All the above configuration functions by default affect the I<global
+default configuration>, which is basically used to augment every profile
+and node configuration.
+
+=over 4
+
+=item profile <name> ...
+
+This subcommand makes the following subcommands act only on a specific
+named profile, instead of on the global default. The profile is created if
+necessary.
+
+Example: create a C<server> profile, give it a random node name, some seed
+nodes and bind it on an unspecified port on all local interfaces. You
+should add some services then and run the node...
+
+   aemp server setnodeid anon/ setseeds doomed,10.0.0.2:5000 setbinds "*:*"
+
+=item delprofile <name>
+
+Deletes the profile of the given name.
+
+=item setparent <name>
+
+Sets the parent profile to use - values not specified in a profile will be
+taken from the parent profile (even recursively, with the global default
+config being the default parent). This is useful to configure profile
+I<classes> and then to inherit from them for individual nodes.
+
+Note that you can specify circular parent chains and even a parent for the
+global configuration. Neither will do you any good, however.
+
+Example: inherit all values not specified in the C<doomed> profile from
+the C<server> profile.
+
+   aemp profile doomed setparent server
+
+=item delparent
+
+Removes the parent again from the profile, if any was set, so the profile
+inherits directly from the global default config again.
+
+=item showprofile <name>
+
+Shows the values of the given profile, and only those, no inherited
+values.
+
+=item showconfig <name> <key value...>
+
+Shows the I<effective> config, i.e. the values as used by a node started
+with the given profile name. Any additional key-value pairs specified
+augment the configuration, just as with C<configure>.
+
+If all arguments are omitted, show the global default config.
+
+=back
 
 =cut
 
 use common::sense;
 
-# must come before anything else
+# should come before anything else, so all modules
+# will be loaded on each restart
 BEGIN {
    if ($ARGV[0] eq "run") {
       shift;
 
       # d'oh
       require AnyEvent::Watchdog;
+      # now we can load extra modules
+
       AnyEvent::Watchdog::autorestart (1);
       AnyEvent::Watchdog::heartbeat (300);
 
       require AnyEvent;
-      require AnyEvent::MP;
-      AnyEvent::MP::initialise_node (@ARGV);
+      require AnyEvent::MP::Kernel;
+      AnyEvent::MP::Kernel::configure (@ARGV);
 
       AnyEvent::detect () eq "AnyEvent::Impl::EV"
          ? EV::loop ()
@@ -123,6 +443,10 @@ sub gen_cert {
    "$cert$key"
 }
 
+sub init {
+   configure profile => "aemp", nodeid => "anon/";
+}
+
 our $cfg     = AnyEvent::MP::Config::config;
 our $profile = $cfg;
 
@@ -131,12 +455,9 @@ sub trace {
    my $cv = AE::cv;
    my %seen;
 
-   my $to = AE::timer 15, 0, sub {
-      warn "timeout\n";
-      $cv->();
-   };
+   my $to = AE::timer 15, 0, sub { exit 1 };
 
-   initialise_node "anon/", $node;
+   init;
 
    my $reply = port {
       my ($node, @neigh) = @_;
@@ -166,38 +487,54 @@ sub docmd;
 our %CMD = (
    snd => sub {
       my $port = shift @ARGV;
-      initialise_node "anon/", node_of $port;
+      init;
 
       snd $port, @ARGV; @ARGV = ();
 
       my $cv = AE::cv;
-      my $to = AE::timer 5, 0, sub { $cv->("timeout") };
+      my $to = AE::timer 5, 0, sub { exit 1 };
       mon $port, $cv;
-      my $reply = port { &$cv; 1 };
-      snd node_of $port, snd => $reply, "ok";
+      my $reply = port sub { &$cv };
+      snd node_of $port, snd => $reply, "message sent successfully";
 
       print join " ", $cv->recv, "\n";
    },
 
    rpc => sub {
       my $port = shift @ARGV;
-      initialise_node "anon/", node_of $port;
+      init;
 
       my $cv = AE::cv;
-      my $to = AE::timer 5, 0, sub { $cv->("timeout") };
-      my $reply = port { &$cv; 1 };
-      snd $port, @ARGV, $reply; @ARGV = ();
+      my $to = AE::timer 5, 0, sub { exit 1 };
+      snd $port, @ARGV, port { &$cv }; @ARGV = ();
       mon $port, $cv;
 
-      print join " ", $cv->recv, "\n";
+      print +(substr JSON::XS->new->encode ([$cv->recv]), 1, -1), "\n";
    },
 
    mon => sub {
       my $port = shift @ARGV;
-      initialise_node "anon/", node_of $port;
+      init;
 
       mon $port, my $cv = AE::cv;
       print join " ", $cv->recv, "\n";
+   },
+
+   eval => sub {
+      my $node = node_of shift @ARGV;
+      my $expr = join " ", @ARGV; @ARGV = ();
+      init;
+
+      my $cv = AE::cv;
+      my $to = AE::timer 5, 0, sub { exit 1 };
+      AnyEvent::MP::Kernel::eval_on $node, $expr, port { &$cv };
+      mon $node, $cv;
+
+      my ($err, @res) = $cv->recv;
+
+      die $err if length $err;
+
+      print +(substr JSON::XS->new->encode (\@res), 1, -1), "\n";
    },
 
    trace => sub {
@@ -256,8 +593,9 @@ our %CMD = (
    },
 
    setbinds => sub {
-      $profile->{binds} = [@ARGV];
-      @ARGV = ();
+      @ARGV >= 1
+         or die "bind addresses missing\n";
+      $profile->{binds} = [split /,/, shift @ARGV];
       ++$cfg->{dirty};
    },
    delbinds => sub {
@@ -283,8 +621,9 @@ our %CMD = (
    },
 
    setseeds => sub {
-      $profile->{seeds} = [@ARGV];
-      @ARGV = ();
+      @ARGV >= 1
+         or die "seed addresses missing\n";
+      $profile->{seeds} = [split /,/, shift @ARGV];
       ++$cfg->{dirty};
    },
    delseeds => sub {
@@ -310,8 +649,9 @@ our %CMD = (
    },
 
    setservices => sub {
-      $profile->{services} = [@ARGV];
-      @ARGV = ();
+      @ARGV >= 1
+         or die "service specifications missing\n";
+      $profile->{services} = [split /,/, shift @ARGV];
       ++$cfg->{dirty};
    },
    delservices => sub {
@@ -338,14 +678,12 @@ our %CMD = (
    },
 
    profile => sub {
-      @ARGV >= 2
-         or die "profile name or subcommand are missing\n";
+      @ARGV >= 1
+         or die "profile name is missing\n";
       my $name = shift @ARGV;
 
       $profile = $cfg->{profile}{$name} ||= {};
       ++$cfg->{dirty};
-
-      docmd;
    },
    delprofile => sub {
       @ARGV >= 1
@@ -353,6 +691,17 @@ our %CMD = (
       my $name = shift @ARGV;
 
       delete $cfg->{profile}{$name};
+      ++$cfg->{dirty};
+   },
+   setparent => sub {
+      @ARGV >= 1
+         or die "profile name is missing\n";
+
+      $profile->{parent} = shift @ARGV;
+      ++$cfg->{dirty};
+   },
+   delparent => sub {
+      delete $profile->{parent};
       ++$cfg->{dirty};
    },
    showprofile => sub {
@@ -365,22 +714,38 @@ our %CMD = (
    showconfig => sub {
       my $name = @ARGV ? shift @ARGV : AnyEvent::MP::Kernel::_nodename;
 
-      print JSON::XS->new->pretty->encode (AnyEvent::MP::Config::find_profile $name);
+      my $profile = AnyEvent::MP::Config::find_profile $name, @ARGV;
+      @ARGV = ();
+
+      # make it look nicer:
+      delete $profile->{profile};
+      delete $profile->{parent};
+
+      print JSON::XS->new->pretty->encode ($profile);
+   },
+
+   # undocumented
+   _resolve => sub {
+      print +(join ",", (AnyEvent::MP::Kernel::_resolve shift @ARGV)->recv), "\n";
    },
 );
+
+for (keys %CMD) {
+   $CMD{$1} = $CMD{$_} if /^set(.*)$/;
+}
 
 sub docmd {
    my $cmd = shift @ARGV;
 
    $CMD{$cmd}
-      or die "$cmd: no such aemp command (try man aemp)";
+      or die "$cmd: no such aemp command (try perldoc aemp, or man aemp)";
 
    $CMD{$cmd}();
 }
 
 @ARGV
-   or die "Usage: aemp subcommand ... (try man aemp)\n";
+   or die "Usage: aemp subcommand ... (try perldoc aemp, or man aemp)\n";
 
-docmd;
+docmd while @ARGV;
 
 
