@@ -68,7 +68,7 @@ The next sections will explain the API of L<AnyEvent::MP> by going through
 a few simple examples. Later some more complex idioms are introduced,
 which are hopefully useful to solve some real world problems.
 
-=head1 Passing Your First Message
+=head2 Passing Your First Message
 
 As a start lets have a look at the messaging API. The following example
 is just a demo to show the basic elements of message passing with
@@ -135,7 +135,7 @@ Passing messages inside just one process is boring. Before we can move on
 and do interprocess message passing we first have to make sure some things
 have been set up correctly for our nodes to talk to each other.
 
-=head1 System Requirements and System Setup
+=head2 System Requirements and System Setup
 
 Before we can start with real IPC we have to make sure some things work on
 your system.
@@ -901,24 +901,27 @@ Here is the server:
 
    AnyEvent->condvar->recv;
 
-It starts not much different, except that this time, we register the node
-port and not any special port - the clients only want to know which node
-the server should be running, and in fact, they could also sue some kind
-of election mechanism or similar.
+It starts out not much different then the previous example, except that
+this time, we register the node port in the global group and not any port
+we created - the clients only want to know which node the server should be
+running on. In fact, they could also use some kind of election mechanism,
+to find the node with lowest load or something like that.
 
-The interesting change is that no port is created - the server is all
-code, and does nothing. All it does is define a function C<client_connect>
-that expects a client port and a nick as arguments. It then monitors the
-client port and binds a receive callback on C<$SELF> that expects messages
-to broadcast to all clients.
+The more interesting change is that indeed no server port is created -
+the server consists only of code, and "does" nothing by itself. All it
+does is define a function C<client_connect>, which expects a client port
+and a nick name as arguments. It then monitors the client port and binds
+a receive callback on C<$SELF>, which expects messages that in turn are
+broadcast to all clients.
 
 The two C<mon> calls are a bit tricky - the first C<mon> is a shorthand
 for C<mon $client, $SELF>. The second does the normal "client has gone
 away" clean-up action. Both could actually be rolled into one C<mon>
 action.
 
-C<$SELF> is a good hint that something interetsing is going on. And
-indeed, when looking at the client, there is a new function, C<spawn>:
+C<$SELF> is a good hint that something interesting is going on. And
+indeed, when looking at the client code, there is a new function,
+C<spawn>:
 
    use common::sense;
    use AnyEvent::MP;
@@ -963,21 +966,23 @@ indeed, when looking at the client, there is a new function, C<spawn>:
    AnyEvent->condvar->recv;
 
 The client is quite similar to the previous one, but instead of contacting
-the server port (which no longer exists), it C<spawn>s a new port on the
-server I<node>:
+the server I<port> (which no longer exists), it C<spawn>s (creates) a new
+the server I<port on node>:
 
       $server = spawn $servernodes->[0], "::client_connect", $client, $nick;
       mon $server, $client;
 
-And of course immediately monitors it. The C<spawn> function creates a new
-port on a remote node and returns its port ID. After creating the port it
-calls a function on the remote node, passing any remaining arguments to
-it, and - most importantly - within the context of the new port. The init
-function can reside in a module (actually it normally I<should> reside
-in a module) - AnyEvent::MP will automatically load the module if the
-function isn't defined.
+And of course the first thing after creating it is monitoring it.
 
-The C<spawn> function returns immediately, which means you can immediately
+The C<spawn> function creates a new port on a remote node and returns
+its port ID. After creating the port it calls a function on the remote
+node, passing any remaining arguments to it, and - most importantly -
+executes the function within the context of the new port, so it can be
+manipulated by refering to C<$SELF>. The init function can reside in a
+module (actually it normally I<should> reside in a module) - AnyEvent::MP
+will automatically load the module if the function isn't defined.
+
+The C<spawn> function returns immediately, which means you can instantly
 send messages to the port, long before the remote node has even heard
 of our request to create a port on it. In fact, the remote node might
 not even be running. Despite these troubling facts, everything should
@@ -985,17 +990,17 @@ work just fine: if the node isn't running (or the init function throws an
 exception), then the monitor will trigger because the port doesn't exist.
 
 If the spawn message gets delivered, but the monitoring message is not
-because of network problems (monitoring, after all, is implemented by
-passing a message, and messages can get lost), then this connection loss
-will eventually trigger the monitoring action. On the remote node (which
-reciprocally monitors the client) the port will also be cleaned up on
-connection loss. When the node comes up and our monitoring message can be
-delivered it will instantly fail because the port has been cleaned up in
-the meantime.
+because of network problems (extremely unlikely, but monitoring, after
+all, is implemented by passing a message, and messages can get lost), then
+this connection loss will eventually trigger the monitoring action. On the
+remote node (which in return monitors the client) the port will also be
+cleaned up on connection loss. When the remote node comes up again and our
+monitoring message can be delivered, it will instantly fail because the
+port has been cleaned up in the meantime.
 
 If your head is spinning by now, that's fine - just keep in mind, after
-creating a port, monitor "the other side" from it, and all will be cleaned
-up just fine.
+creating a port, monitor it on the local node, and monitor "the other
+side" from the remote node, and all will be cleaned up just fine.
 
 =head2 Services
 
@@ -1017,7 +1022,7 @@ AnyEvent::MP::Global), then you can configure this service statically:
    aemp profile mysrvnode services mymod::service::
    aemp run profile mysrvnode
 
-And the module will automatically be started in the node, as specifying a
+And the module will automatically be loaded in the node, as specifying a
 module name (with C<::>-suffix) will simply load the module, which is then
 free to do whatever it wants.
 
@@ -1028,7 +1033,7 @@ Bummskraut IRC backend on a machine named "ruth", I could do this:
 
    aemp profile ruth addservice BK::Backend::IRC::
 
-And any F<aemp run> on that host will automaticlaly have the bummskraut
+And any F<aemp run> on that host will automaticllay have the bummskraut
 irc backend running.
 
 That's plenty of possibilities you can use - it's all up to you how you

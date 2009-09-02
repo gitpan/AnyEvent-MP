@@ -1,11 +1,19 @@
 Revision history for AnyEvent::MP
 
 TODO: global protocol fix?
-TODO: some avoid to connetc to all seeds at the same time
 TODO: testsuite
 TODO: make more parameters configurable: framing, tls, auth, timeouts
+TODO: intro: maybe simple job pool example?
+TODO: aemp manpage more examples
+
+1.0  Wed Sep  2 20:40:43 CEST 2009
+	- randomise more connection times, but reduce delay to 0.2s (seeds)
+          and 0.05s (normal connects).
+        - upgrade to and require AnyEvent::Watchdog 1.0.
 
 0.95 Mon Aug 31 22:03:55 CEST 2009
+	- tutorial finally covers all the basics, maybe not optimally, but it
+          is covered.
 	- rename initialise_node to configure and accepts key => value
           pairs for configuration.
 	- give aemp a full manpage.
@@ -22,7 +30,7 @@ TODO: make more parameters configurable: framing, tls, auth, timeouts
 
 0.9  Sat Aug 29 18:47:45 CEST 2009
 	- tutorial was updated to reflect the current API, but
-          doe snot touch monitoring yet.
+          does not touch monitoring yet.
 	- got rid of noderefs and slave nodes entirely, introduce
           free-text node identifiers and anonymous nodes.
         - document security issues with tls_anon method and introduce

@@ -35,7 +35,7 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '0.95';
+our $VERSION = '1.0';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
    add_node load_func snd_to_func snd_on eval_on
@@ -140,12 +140,12 @@ sub alnumbits($) {
 }
 
 sub gen_uniq {
-   alnumbits pack "wNa*", $$, time, nonce 2
+   alnumbits pack "nna*", $$ & 0xffff, time & 0xffff, nonce 2
 }
 
 our $CONFIG; # this node's configuration
 
-our $RUNIQ  = alnumbits nonce 16;; # remote uniq value
+our $RUNIQ  = alnumbits nonce 96/8; # remote uniq value
 our $UNIQ   = gen_uniq; # per-process/node unique cookie
 our $NODE   = "anon/$RUNIQ";
 our $ID     = "a";

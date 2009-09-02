@@ -90,8 +90,9 @@ sub set_seeds(@) {
 
    $SEED_WATCHER ||= AE::timer 5, $AnyEvent::MP::Kernel::MONITOR_TIMEOUT, \&more_seeding;
 
-   seed_connect $_
-      for @SEEDS;
+   for my $seed (@SEEDS) {
+      after 0.100 * rand, sub { seed_connect $seed };
+   }
 }
 
 #############################################################################

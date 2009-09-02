@@ -138,7 +138,7 @@ sub connect {
 
    my @endpoints;
 
-   $self->{connect_w} = AE::timer rand, $interval, sub {
+   $self->{connect_w} = AE::timer 0.050 * rand, $interval * (0.9 + 0.1 * rand), sub {
       @endpoints = @addresses
          unless @endpoints;
 

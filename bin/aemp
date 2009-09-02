@@ -84,11 +84,18 @@ it unnecesary to write any wrapper programs.
 
 =over 4
 
-=item run <profile> <...>
+=item run <configure_args>...
 
 Runs a node by calling C<AnyEvent::MP::Kernel::configure> with the given
 arguments. The node runs under L<AnyEvent::Watchdog>, can be restarted
-(and autorestarted, see the L<AnyEvent::Watchdog> manual).
+(and autorestarted, see the L<AnyEvent::Watchdog> manual). A very common
+invocation is to just specify a profile using the profile parameter
+
+   aemp run profile database-backend
+
+... but you can use most arguments that C<configure> understands:
+
+   aemp run nodeid mynode2 profile someprofile
 
 Care has been taken to load (almost) no modules other than
 L<AnyEvent::Watchdog> and the modules it loads, so everything (including
@@ -155,7 +162,7 @@ Example: find the unix process ID of the node called posicks.
 Asks the given node for all currently connected nodes, then asks those
 nodes for the same, thus tracing all node connections.
 
-=cut
+=back
 
 =head2 CONFIGURATION/NODE ID/SECRET/CERTIFICATE
 
@@ -215,6 +222,8 @@ To discover the network you have to specify some seed addresses, which are
 basically C<host:port> pairs where you expect some long-running nodes. It
 does no harm to have a node as its own seed (they will eventually be
 ignored).
+
+=over 4
 
 =item setseeds <host:port>,...
 
@@ -341,7 +350,7 @@ Example: create a C<server> profile, give it a random node name, some seed
 nodes and bind it on an unspecified port on all local interfaces. You
 should add some services then and run the node...
 
-   aemp server setnodeid anon/ setseeds doomed,10.0.0.2:5000 setbinds "*:*"
+   aemp profile server nodeid anon/ seeds doomed,10.0.0.2:5000 binds "*:*"
 
 =item delprofile <name>
 
@@ -396,8 +405,9 @@ BEGIN {
       require AnyEvent::Watchdog;
       # now we can load extra modules
 
-      AnyEvent::Watchdog::autorestart (1);
-      AnyEvent::Watchdog::heartbeat (300);
+      require AnyEvent::Watchdog::Util;
+      AnyEvent::Watchdog::Util::autorestart (1);
+      AnyEvent::Watchdog::Util::heartbeat (300);
 
       require AnyEvent;
       require AnyEvent::MP::Kernel;

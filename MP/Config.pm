@@ -62,12 +62,13 @@ sub config {
    \%CFG
 }
 
+sub _find_profile($);
 sub _find_profile($) {
    my ($name) = @_;
 
    if (defined $name) {
       my $profile = $CFG{profile}{$name};
-      return _find_profile ($profile->{parent}), %$profile;
+      return _find_profile $profile->{parent}, %$profile;
    } else {
       return %CFG;
    }
