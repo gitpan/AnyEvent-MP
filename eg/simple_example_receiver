@@ -1,13 +1,14 @@
 #!/opt/bin/perl
+
 use AnyEvent;
 use AnyEvent::MP;
 use AnyEvent::MP::Global;
 
-initialise_node;
+configure;
 
 my $port = port;
 
-AnyEvent::MP::Global::register $port, "eg_receivers";
+grp_reg eg_receivers => $port;
 
 rcv $port, test => sub {
    my ($data, $reply_port) = @_;

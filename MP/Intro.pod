@@ -219,7 +219,7 @@ full:
 
    my $port = port;
 
-   AnyEvent::MP::Global::register $port, "eg_receivers";
+   grp_reg eg_receivers => $port;
 
    rcv $port, test => sub {
       my ($data, $reply_port) = @_;
@@ -342,22 +342,21 @@ talking about the receiver.
 Let's look at the next line(s):
 
    my $port = port;
-   AnyEvent::MP::Global::register $port, "eg_receivers";
+   grp_reg eg_receivers => $port;
 
 The C<port> function has already been discussed. It simply creates a new
-I<port> and returns the I<port ID>. The C<register> function, however,
-is new: The first argument is the I<port ID> that we want to add to a
-I<global group>, and its second argument is the name of that I<global
-group>.
+I<port> and returns the I<port ID>. The C<grp_reg> function, however, is
+new: The first argument is the name of a I<global group>, and the second
+argument is the I<port ID> to register in that group. group>.
 
 You can choose the name of such a I<global group> freely (prefixing your
-package name is highly recommended!). The purpose of such a group is to
-store a set of I<port IDs>. This set is made available throughout the
-L<AnyEvent::MP> network, so that each node can see which ports belong to
-that group.
+package name is I<highly recommended> however and might be enforce din
+future versions!). The purpose of such a group is to store a set of port
+IDs. This set is made available throughout the L<AnyEvent::MP> network,
+so that each node can see which ports belong to that group.
 
-Later we will see how the sender looks for the ports in this I<global
-group> to send messages to them.
+Later we will see how the sender looks for the ports in this global
+group to send messages to them.
 
 The last step in the example is to set up a receiver callback for those
 messages, just as was discussed in the first example. We again match
@@ -377,7 +376,7 @@ Ok, now let's take a look at the sender code:
 
    my $find_timer =
       AnyEvent->timer (after => 0, interval => 1, cb => sub {
-         my $ports = AnyEvent::MP::Global::find "eg_receivers"
+         my $ports = grp_get "eg_receivers"
             or return;
 
          snd $_, test => time
@@ -394,13 +393,13 @@ becomes our seed node.
 Next we set up a timer that repeatedly (every second) calls this chunk of
 code:
 
-   my $ports = AnyEvent::MP::Global::find "eg_receivers"
+   my $ports = grp_get "eg_receivers"
       or return;
 
    snd $_, test => time
       for @$ports;
 
-The only new function here is the C<find> function of
+The only new function here is the C<grp_get> function of
 L<AnyEvent::MP::Global>. It searches in the global group named
 C<eg_receivers> for ports. If none are found, it returns C<undef>, which
 makes our code return instantly and wait for the next round, as nobody is
@@ -408,7 +407,7 @@ interested in our message.
 
 As soon as the receiver application has connected and the information
 about the newly added port in the receiver has propagated to the sender
-node, C<find> returns an array reference that contains the I<port ID> of
+node, C<grp_get> returns an array reference that contains the I<port ID> of
 the receiver I<port(s)>.
 
 We then just send a message with a tag and the current time to every
@@ -664,7 +663,7 @@ set-up explained earlier, with a separate F<aemp run> seed node):
       msg "$nick: $msg";
    };
 
-   AnyEvent::MP::Global::register $server, "eg_chat_server";
+   grp_reg eg_chat_server => $server;
 
    warn "server ready.\n";
 
@@ -716,7 +715,7 @@ The C<privmsg> callback simply broadcasts the message to all clients:
 And finally, the server registers itself in the server group, so that
 clients can find it:
 
-   AnyEvent::MP::Global::register $server, "eg_chat_server";
+   grp_reg eg_chat_server => $server;
 
 Well, well... and where is this supervisor stuff? Well... we cheated,
 it's not there. To not overcomplicate the example, we only put it into
@@ -738,7 +737,7 @@ longer:
    my ($client, $server);
 
    sub server_connect {
-      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+      my $servernodes = grp_get "eg_chat_server"
          or return after 1, \&server_connect;
 
       print "\rconnecting...\n";
@@ -774,7 +773,7 @@ usage.
 The next relevant thing is... finally... the supervisor:
 
    sub server_connect {
-      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+      my $servernodes = grp_get "eg_chat_server"
          or return after 1, \&server_connect;
 
 This looks up the server in the C<eg_chat_server> global group. If it
@@ -871,7 +870,7 @@ Here is the server:
 
    configure;
 
-   AnyEvent::MP::Global::register $NODE, "eg_chat_server2";
+   grp_reg eg_chat_server2 => $NODE;
 
    my %clients;
 
@@ -938,7 +937,7 @@ C<spawn>:
    my ($client, $server);
 
    sub server_connect {
-      my $servernodes = AnyEvent::MP::Global::find "eg_chat_server2"
+      my $servernodes = grp_get "eg_chat_server2"
          or return after 1, \&server_connect;
 
       print "\rconnecting...\n";

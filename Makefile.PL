@@ -1,6 +1,6 @@
 use ExtUtils::MakeMaker;
 
-use 5.010; # smartmatching
+use 5.008002;
 
 my $mm = MM->new({
     dist         => {
@@ -15,7 +15,7 @@ my $mm = MM->new({
        AnyEvent           => 5.11,
        AnyEvent::Watchdog => 1.0,
        Digest::MD6        => 0,
-       Digest::HMAC_MD6   => 0,
+       Digest::HMAC_MD6   => 0, # requires Module::Build, which fails on 5.8.7 :/
        MIME::Base64       => 3,
        JSON::XS           => 2.25,
        Net::Interface     => 1.011,

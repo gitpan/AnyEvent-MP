@@ -39,7 +39,12 @@ use AnyEvent::Handle 4.92 ();
 
 use AnyEvent::MP::Config ();
 
-our $PROTOCOL_VERSION = 0;
+our $PROTOCOL_VERSION = 1;
+
+our @HOOK_CONNECT;   # called at connect/accept time
+our @HOOK_GREETING;  # called at greeting1 time
+our @HOOK_CONNECTED; # called at data phase
+our @HOOK_DESTROY;   # called at destroy time
 
 =item $listener = mp_listener $host, $port, <constructor-args>
 
@@ -76,24 +81,13 @@ sub mp_connect {
    my $release = pop;
    my ($host, $port, @args) = @_;
 
-   my $state;
-
-   $state = AnyEvent::Socket::tcp_connect $host, $port, my$x=sub {
-      my ($fh, $nhost, $nport) = @_;
-
-      return $release->() unless $fh;
-
-      $state = new AnyEvent::MP::Transport
-         fh       => $fh,
-         peername => $host,
-         peerhost => $nhost,
-         peerport => $nport,
-         release  => $release,
-         @args,
-      ;
-   };
-
-   \$state
+   new AnyEvent::MP::Transport
+      connect  => [$host, $port],
+      peerhost => $host,
+      peerport => $port,
+      release  => $release,
+      @args,
+   ;
 }
 
 =item new AnyEvent::MP::Transport
@@ -118,15 +112,6 @@ sub mp_connect {
 
 =cut
 
-sub LATENCY() { 3 } # assumed max. network latency
-
-our @FRAMINGS = qw(json storable); # the framing types we accept and send, in order of preference
-our @AUTH_SND = qw(tls_md6_64_256 hmac_md6_64_256); # auth types we send
-our @AUTH_RCV = (@AUTH_SND, qw(tls_anon cleartext)); # auth types we accept
-
-#AnyEvent::Handle::register_write_type mp_record => sub {
-#};
-
 sub new {
    my ($class, %arg) = @_;
 
@@ -137,20 +122,15 @@ sub new {
    {
       Scalar::Util::weaken (my $self = $self);
 
-      my $config = AnyEvent::MP::Config::config;
+      my $config = $AnyEvent::MP::Kernel::CONFIG;
 
-      my $latency = $config->{network_latency} || LATENCY;
+      my $timeout  = $config->{monitor_timeout};
+      my $lframing = $config->{data_format};
+      my $auth_snd = $config->{auth_offer};
+      my $auth_rcv = $config->{auth_accept};
 
       $self->{secret} = $config->{secret}
          unless exists $self->{secret};
-
-      $self->{timeout} = $config->{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT
-         unless exists $self->{timeout};
-
-      $self->{timeout} -= $latency;
-
-      $self->{timeout} = 1 + $latency
-         if $self->{timeout} < 1 + $latency;
 
       my $secret = $self->{secret};
 
@@ -167,30 +147,31 @@ sub new {
       }
 
       $self->{hdl} = new AnyEvent::Handle
-         fh       => delete $self->{fh},
-         autocork => 1,
-         no_delay => 1,
-         on_error => sub {
+         +($self->{fh} ? (fh => $self->{fh}) : (connect => $self->{connect})),
+         autocork  => 1,
+         no_delay  => 1,
+         keepalive => 1,
+         on_error  => sub {
             $self->error ($_[2]);
          },
-         rtimeout => $latency,
-         peername => delete $self->{peername},
+         rtimeout  => $timeout,
       ;
 
-      my $greeting_kv = $self->{greeting} ||= {};
-
-      $self->{local_node} ||= $AnyEvent::MP::Kernel::NODE;
+      my $greeting_kv = $self->{local_greeting} ||= {};
 
       $greeting_kv->{tls}      = "1.0" if $self->{tls_ctx};
       $greeting_kv->{provider} = "AE-$AnyEvent::MP::Kernel::VERSION";
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
       $greeting_kv->{timeout}  = $self->{timeout};
 
+      # can modify greeting_kv
+      $_->($self) for @HOOK_CONNECT;
+
       # send greeting
       my $lgreeting1 = "aemp;$PROTOCOL_VERSION"
-                     . ";$self->{local_node}"
-                     . ";" . (join ",", @AUTH_RCV)
-                     . ";" . (join ",", @FRAMINGS)
+                     . ";$AnyEvent::MP::Kernel::NODE"
+                     . ";" . (join ",", @$auth_rcv)
+                     . ";" . (join ",", @$lframing)
                      . (join "", map ";$_=$greeting_kv->{$_}", keys %$greeting_kv);
 
       my $lgreeting2 = MIME::Base64::encode_base64 AnyEvent::MP::Kernel::nonce (66), "";
@@ -204,25 +185,24 @@ sub new {
 
          my ($aemp, $version, $rnode, $auths, $framings, @kv) = split /;/, $rgreeting1;
 
-         if ($aemp ne "aemp") {
-            return $self->error ("unparsable greeting");
-         } elsif ($version != $PROTOCOL_VERSION) {
-            return $self->error ("version mismatch (we: $PROTOCOL_VERSION, they: $version)");
-         } elsif ($rnode eq $self->{local_node}) {
-            AnyEvent::MP::Global::avoid_seed ($self->{seed})
-               if exists $self->{seed};
-
-            return $self->error ("I refuse to talk to myself");
-         } elsif ($AnyEvent::MP::Kernel::NODE{$rnode} && $AnyEvent::MP::Kernel::NODE{$rnode}{transport}) {
-            return $self->error ("$rnode already connected, not connecting again.");
-         }
-
          $self->{remote_node} = $rnode;
 
          $self->{remote_greeting} = {
             map /^([^=]+)(?:=(.*))?/ ? ($1 => $2) : (),
                @kv
          };
+
+         $_->($self) for @HOOK_GREETING;
+
+         if ($aemp ne "aemp") {
+            return $self->error ("unparsable greeting");
+         } elsif ($version != $PROTOCOL_VERSION) {
+            return $self->error ("version mismatch (we: $PROTOCOL_VERSION, they: $version)");
+         } elsif ($rnode eq $AnyEvent::MP::Kernel::NODE) {
+            return $self->error ("I refuse to talk to myself");
+         } elsif ($AnyEvent::MP::Kernel::NODE{$rnode} && $AnyEvent::MP::Kernel::NODE{$rnode}{transport}) {
+            return $self->error ("$rnode already connected, not connecting again.");
+         }
 
          # read nonce
          $self->{hdl}->push_read (line => sub {
@@ -235,7 +215,7 @@ sub new {
 
             my $s_auth;
             for my $auth_ (split /,/, $auths) {
-               if (grep $auth_ eq $_, @AUTH_SND and ($auth_ !~ /^tls_/ or $tls)) {
+               if (grep $auth_ eq $_, @$auth_snd and ($auth_ !~ /^tls_/ or $tls)) {
                   $s_auth = $auth_;
                   last;
                }
@@ -246,7 +226,7 @@ sub new {
 
             my $s_framing;
             for my $framing_ (split /,/, $framings) {
-               if (grep $framing_ eq $_, @FRAMINGS) {
+               if (grep $framing_ eq $_, @$lframing) {
                   $s_framing = $framing_;
                   last;
                }
@@ -302,9 +282,17 @@ sub new {
 
                $hdl->rbuf_max (undef);
 
-               $self->{hdl}->rtimeout ($self->{remote_greeting}{timeout});
-               $self->{hdl}->wtimeout ($self->{timeout} - LATENCY);
-               $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
+               # we rely on TCP retransmit timeouts and keepalives
+               $self->{hdl}->rtimeout (undef);
+
+               # except listener-less nodes, they need to continuously probe
+               unless (@$AnyEvent::MP::Kernel::LISTENER) {
+                  $self->{hdl}->wtimeout ($timeout);
+                  $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
+               }
+
+               $self->{remote_greeting}{untrusted} = 1
+                  if $auth_method eq "tls_anon";
 
                my $queue = delete $self->{queue}; # we are connected
 
@@ -339,7 +327,7 @@ sub error {
 
    delete $self->{keepalive};
 
-#   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} $msg");#d#
+   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} $msg");#d#
 
    $self->{node}->transport_error (transport_error => $self->{node}{id}, $msg)
       if $self->{node} && $self->{node}{transport} == $self;
@@ -364,6 +352,8 @@ sub connected {
    my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
    Scalar::Util::weaken ($self->{node} = $node);
    $node->transport_connect ($self);
+
+   $_->($self) for @HOOK_CONNECTED;
 }
 
 sub send {
@@ -378,6 +368,8 @@ sub destroy {
 
    $self->{hdl}->destroy
       if $self->{hdl};
+
+   $_->($self) for @HOOK_DESTROY;
 }
 
 sub DESTROY {
@@ -427,7 +419,7 @@ The constant C<aemp> to identify this protocol.
 
 =item protocol version
 
-The protocol version supported by this end, currently C<0>. If the
+The protocol version supported by this end, currently C<1>. If the
 versions don't match then no communication is possible. Minor extensions
 are supposed to be handled through additional key-value pairs.
 
@@ -457,13 +449,6 @@ The remaining arguments are C<KEY=VALUE> pairs. The following key-value
 pairs are known at this time:
 
 =over 4
-
-=item timeout=<seconds>
-
-The amount of time after which this node should be detected as dead unless
-some data has been received. The node is responsible to send traffic
-reasonably more often than this interval (such as every timeout minus five
-seconds).
 
 =item provider=<module-version>
 
@@ -633,6 +618,29 @@ transfer only.
    ...
 
 The shared secret in use was C<8ugxrtw6H5tKnfPWfaSr4HGhE8MoJXmzTT1BWq7sLutNcD0IbXprQlZjIbl7MBKoeklG3IEfY9GlJthC0pENzk>.
+
+=head2 MONITORING
+
+Monitoring the connection itself is transport-specific. For TCP, all
+connection monitoring is currently left to TCP retransmit time-outs
+on a busy link, and TCP keepalive (which should be enabled) for idle
+connections.
+
+This is not sufficient for listener-less nodes, however: they need
+to regularly send data (30 seconds, or the monitoring interval, is
+recommended), so TCP actively probes.
+
+Future implementations of AnyEvent::Transport might query the kernel TCP
+buffer after a write timeout occurs, and if it is non-empty, shut down the
+connections, but this is an area of future research :)
+
+=head2 NODE PROTOCOL
+
+The transport simply transfers messages, but to implement a full node, a
+special node port must exist that understands a number of requests.
+
+If you are interested in implementing this, drop us a note so we finish
+the documentation.
 
 =head1 SEE ALSO
 

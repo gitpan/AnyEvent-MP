@@ -35,19 +35,15 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '1.0';
+our $VERSION = '1.1';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
    add_node load_func snd_to_func snd_on eval_on
 
    NODE $NODE node_of snd kil port_is_local
    configure
-   known_nodes up_nodes mon_nodes node_is_known node_is_up
+   up_nodes mon_nodes node_is_up
 );
-
-our $CONNECT_INTERVAL =  2; # new connect every 2s, at least
-our $NETWORK_LATENCY  =  3; # activity timeout
-our $MONITOR_TIMEOUT  = 15; # fail monitoring after this time
 
 =item $AnyEvent::MP::Kernel::WARN->($level, $msg)
 
@@ -57,18 +53,26 @@ connection could not be created, authorisation failed and so on.
 It I<must not> block or send messages -queue it and use an idle watcher if
 you need to do any of these things.
 
-C<$level> sould be C<0> for messages ot be logged always, C<1> for
+C<$level> should be C<0> for messages to be logged always, C<1> for
 unexpected messages and errors, C<2> for warnings, C<7> for messages about
 node connectivity and services, C<8> for debugging messages and C<9> for
 tracing messages.
 
 The default simply logs the message to STDERR.
 
+=item @AnyEvent::MP::Kernel::WARN
+
+All code references in this array are called for every log message, from
+the default C<$WARN> handler. This is an easy way to tie into the log
+messages without disturbing others.
+
 =cut
 
 our $WARNLEVEL = exists $ENV{PERL_ANYEVENT_MP_WARNLEVEL} ? $ENV{PERL_ANYEVENT_MP_WARNLEVEL} : 5;
-
+our @WARN;
 our $WARN = sub {
+   &$_ for @WARN;
+
    return if $WARNLEVEL < $_[0];
 
    my ($level, $msg) = @_;
@@ -110,10 +114,6 @@ sub nonce($) {
       sysread $fh, $nonce, $_[0];
    } else {
       # shit...
-      our $nonce_init;
-         unless ($nonce_init++) {
-         srand time ^ $$ ^ unpack "%L*", qx"ps -edalf" . qx"ipconfig /all";
-      }
       $nonce = join "", map +(chr rand 256), 1 .. $_[0]
    }
 
@@ -177,8 +177,20 @@ BEGIN {
       : sub () { 0 };
 }
 
+our $DELAY_TIMER;
+our @DELAY_QUEUE;
+
+sub _delay_run {
+   (shift @DELAY_QUEUE or return)->() while 1;
+}
+
+sub delay($) {
+   push @DELAY_QUEUE, shift;
+   $DELAY_TIMER ||= AE::timer 0, 0, \&_delay_run;
+}
+
 sub _inject {
-   warn "RCV $SRCNODE->{id} -> " . (JSON::XS->new->encode (\@_)) . "\n" if TRACE && @_;#d#
+   warn "RCV $SRCNODE->{id} -> " . eval { JSON::XS->new->encode (\@_) } . "\n" if TRACE && @_;#d#
    &{ $PORT{+shift} or return };
 }
 
@@ -193,7 +205,10 @@ sub add_node {
 sub snd(@) {
    my ($nodeid, $portid) = split /#/, shift, 2;
 
-   warn "SND $nodeid <- " . (JSON::XS->new->encode (\@_)) . "\n" if TRACE && @_;#d#
+   warn "SND $nodeid <- " . eval { JSON::XS->new->encode (\@_) } . "\n" if TRACE && @_;#d#
+
+   defined $nodeid #d#UGLY
+      or Carp::croak "'undef' is not a valid node ID/port ID";
 
    ($NODE{$nodeid} || add_node $nodeid)
       ->{send} (["$portid", @_]);
@@ -223,8 +238,16 @@ This function can be used to implement C<spawn>-like interfaces.
 sub snd_to_func($$;@) {
    my $nodeid = shift;
 
-   ($NODE{$nodeid} || add_node $nodeid)
-      ->send (["", @_]);
+   # on $NODE, we artificially delay... (for spawn)
+   # this is very ugly - maybe we should simply delay ALL messages,
+   # to avoid deep recursion issues. but that's so... slow...
+   $AnyEvent::MP::Node::Self::DELAY = 1
+      if $nodeid ne $NODE;
+
+   defined $nodeid #d#UGLY
+      or Carp::croak "'undef' is not a valid node ID/port ID";
+
+   ($NODE{$nodeid} || add_node $nodeid)->send (["", @_]);
 }
 
 =item snd_on $node, @msg
@@ -306,7 +329,7 @@ sub _resolve($) {
 
                for my $if (Net::Interface->interfaces) {
                   # we statically lower-prioritise ipv6 here, TODO :()
-                  for my $_ ($if->address (Net::Interface::AF_INET ())) {
+                  for $_ ($if->address (Net::Interface::AF_INET ())) {
                      next if /^\x7f/; # skip localhost etc.
                      push @addr, $_;
                   }
@@ -348,7 +371,8 @@ sub _resolve($) {
    $cv
 }
 
-sub configure(%) {
+sub configure(@) {
+   unshift @_, "profile" if @_ & 1;
    my (%kv) = @_;
 
    my $profile = delete $kv{profile};
@@ -358,7 +382,12 @@ sub configure(%) {
 
    $CONFIG = AnyEvent::MP::Config::find_profile $profile, %kv;
 
+   delete $NODE{$NODE}; # we do not support doing stuff before configure
+
    my $node = exists $CONFIG->{nodeid} ? $CONFIG->{nodeid} : $profile;
+
+   $node or Carp::croak "$node: illegal node ID (see AnyEvent::MP manpage for syntax)\n";
+
    $NODE = $node
       unless $node eq "anon/";
 
@@ -393,6 +422,8 @@ sub configure(%) {
       }
    }
 
+   $WARN->(8, "node listens on [@$LISTENER].");
+
    # the global service is mandatory currently
    require AnyEvent::MP::Global;
 
@@ -400,7 +431,10 @@ sub configure(%) {
    AnyEvent::MP::Global::set_seeds (map $_->recv, map _resolve $_, @$seeds);
 
    for (@{ $CONFIG->{services} }) {
-      if (s/::$//) {
+      if (ref) {
+         my ($func, @args) = @$_;
+         (load_func $func)->(@args);
+      } elsif (s/::$//) {
          eval "require $_";
          die $@ if $@;
       } else {
@@ -414,7 +448,9 @@ sub configure(%) {
 
 =item node_is_known $nodeid
 
-Returns true iff the given node is currently known to the system.
+Returns true iff the given node is currently known to the system. The only
+time a node is known but not up currently is when a conenction request is
+pending.
 
 =cut
 
@@ -444,7 +480,7 @@ itself and nodes not currently connected.
 
 =cut
 
-sub known_nodes {
+sub known_nodes() {
    map $_->{id}, values %NODE
 }
 
@@ -455,7 +491,7 @@ the node itself).
 
 =cut
 
-sub up_nodes {
+sub up_nodes() {
    map $_->{id}, grep $_->{transport}, values %NODE
 }
 
@@ -475,6 +511,12 @@ Callbacks I<must not> block and I<should not> send any messages.
 
 The function returns an optional guard which can be used to unregister
 the monitoring callback again.
+
+Example: make sure you call function C<newnode> for all nodes that are up
+or go up (and down).
+
+   newnode $_, 1 for up_nodes;
+   mon_nodes \&newnode;
 
 =cut
 
@@ -517,7 +559,7 @@ our %node_req = (
       Scalar::Util::weaken $node; #TODO# ugly
       $NODE{""}->monitor ($portid, $node->{rmon}{$portid} = sub {
          $node->send (["", kil => $portid, @_])
-            if $node && $node->{transport}; #TODO# ugly, should use snd and remove-on-disocnnect
+            if $node && $node->{transport}; #TODO# ugly, should use snd and remove-on-disconnect
       });
    },
    kil => sub {
@@ -548,7 +590,7 @@ our %node_req = (
 
    # random utilities
    eval => sub {
-      my @res = eval shift;
+      my @res = do { package main; eval shift };
       snd @_, "$@", @res if @_;
    },
    time => sub {

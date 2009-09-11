@@ -1,4 +1,4 @@
-#!/OPT/BIn/perl
+#!/opt/bin/perl
 
 =head1 NAME
 
@@ -11,12 +11,13 @@
    # protocol commands
    aemp snd <port> <arg...>      # send a message
    aemp mon <port>               # wait till port is killed
-   aemp rpc <port> <arg...>      # send message, append reply
+   aemp cal <port> <arg...>      # send message, append reply
    aemp eval <node> <expr...>    # evaluate expression
-   aemp trace <nodeid>           # trace the network topology
+   aemp trace <node>             # trace the network topology
 
    # run a node
    aemp run configure_args...    # run a node
+   aemp restart <node>           # restart a node if running under watchdog
 
    # node configuration: node ID
    aemp setnodeid <nodeid>       # configure the real node id
@@ -77,10 +78,33 @@ configuration, e.g.:
 Please note that all C<setxxx> subcommands have an alias without the
 C<set> prefix.
 
+All configuration data is stored in a human-readable (JSON) config file
+stored in F<~/.perl-anyevent-mp> (or F<%appdata%/perl-anyevent-mp>
+on loser systems). Feel free to look at it or edit it, the format is
+relatively simple.
+
+=head2 SPECIFYING ARGUMENTS
+
+Arguments can be specified just as with any other shell command, with a
+few special cases:
+
+If the I<first> argument starts with a literal C<[>-character, then it is
+interpreted as a UTF-8 encoded JSON text. The resulting array replaces all
+arguments.
+
+Otherwise, if I<any> argument starts with one of C<[>, C<{> or C<">, then
+it is interpreted as UTF-8 encoded JSON text (or a single value in case of
+C<">), and the resulting reference or scalar replaces the argument.
+
+This allows you, for example, to specify binds in F<aemp run> (using POSIX
+shell syntax):
+
+   aemp run binds '["*:4040"]'
+
 =head2 RUNNING A NODE
 
 This can be used to run a node - together with some services, this makes
-it unnecesary to write any wrapper programs.
+it unnecessary to write any wrapper programs.
 
 =over 4
 
@@ -89,9 +113,9 @@ it unnecesary to write any wrapper programs.
 Runs a node by calling C<AnyEvent::MP::Kernel::configure> with the given
 arguments. The node runs under L<AnyEvent::Watchdog>, can be restarted
 (and autorestarted, see the L<AnyEvent::Watchdog> manual). A very common
-invocation is to just specify a profile using the profile parameter
+invocation is to just specify a profile using the profile name
 
-   aemp run profile database-backend
+   aemp run database-backend
 
 ... but you can use most arguments that C<configure> understands:
 
@@ -102,12 +126,18 @@ L<AnyEvent::Watchdog> and the modules it loads, so everything (including
 the L<AnyEvent::MP> modules themselves) will be freshly loaded on restart,
 which makes upgrading everything except the perl binary easy.
 
+=item restart <node>
+
+Restarts the node using C<AnyEvent::Watchdog::Util::restart>. This works
+for nodes started by C<aemp run>, but also for any other node that uses
+L<AnyEvent::Watchdog>.
+
 =back
 
 =head2 PROTOCOL COMMANDS
 
 These commands actually communicate with other nodes. They all use a node
-profile name of C<aemp> (specifying a dfeault node ID of C<anon/> and a
+profile name of C<aemp> (specifying a default node ID of C<anon/> and a
 binds list containing C<*:*> only).
 
 They all use a timeout of five seconds, after which they give up.
@@ -121,23 +151,23 @@ is your problem.
 
 Exits after ensuring that the message has been delivered to its node.
 
-Most useful to take avdantage of some undocumented functionality inside
+Most useful to take advantage of some undocumented functionality inside
 nodes, such as node ports being able to call any method:
 
    aemp snd doomed AnyEvent::Watchdog::restart 1
 
-=item rpc <port> <arg...>
+=item cal <port> <arg...>
 
-Like F<aemp snd>, but appends a local reply port to the message and waits
-for a message to it.
+Like F<aemp cal>: appends a local reply port to the message and waits for
+a message to it.
 
 Any return values will be JSON-encoded and printed separated by commas
 (kind of like a JSON array without []-brackets).
 
-Example: ask the (undocumented) time service of a node for it'S current
+Example: ask the (undocumented) time service of a node for its current
 time.
 
-   aemp rpc mynode time
+   aemp cal mynode time
 
 =item mon <port>
 
@@ -151,7 +181,7 @@ Example: monitor some node.
 =item eval <node> <expr...>
 
 Joins all remaining arguments into a string and evaluates it on the given
-node. Return values are handled as with F<aemp rpc>.
+node. Return values are handled as with F<aemp cal>.
 
 Example: find the unix process ID of the node called posicks.
 
@@ -196,7 +226,7 @@ it's parent profile, or stays unset.
 
 =item gencert
 
-Generates a self-signed certficate and key, and sets it. This works
+Generates a self-signed certificate and key, and sets it. This works
 similarly to a shared secret: when all nodes have it, TLS will be used to
 authenticate and encrypt all traffic.
 
@@ -229,8 +259,9 @@ ignored).
 
 Sets or replaces the list of seeds, which must be specified as a
 comma-separated list of C<host:port> pairs. The C<host> can be a hostname,
-an IP address, or C<*> to signify all local host addresses. If the
-C<:port> is omitted, then the default port of C<4040> is assumed.
+an IP address, or C<*> to signify all local host addresses (which makes
+little sense for seeds, outside some examples, but a lot of sense for
+binds).
 
 An empty list is allowed.
 
@@ -265,12 +296,12 @@ possible to some extent.
 =item setbinds <host:port>,...
 
 Sets the list of bind addresses explicitly - see the F<aemp setseeds>
-command for the exact syntax. In addition, a value of C<0> for the port
-means to use a dynamically-assigned port.
+command for the exact syntax. In addition, a value of C<*> for the port,
+or not specifying a port, means to use a dynamically-assigned port.
 
-Note that the C<*>, C<*:*> or C<*:port> values are very useful here.
+Note that the C<*>, C<*:*> or C<*:port> patterns are very useful here.
 
-Example: bind on the default port (4040) on all local interfaces.
+Example: bind on a ephemeral port on all local interfaces.
 
    aemp setbinds "*"
 
@@ -281,7 +312,7 @@ Example: bind on a random port on all local interfaces.
 Example: resolve "doomed.mydomain" and try to bind on port C<4040> of all
 IP addressess returned.
 
-   aep setbinds doomed.mydomain
+   aep setbinds doomed.mydomain:4040
 
 =item delbinds
 
@@ -310,12 +341,25 @@ run.
 =item setservices <initfunc>...
 
 Sets or replaces the list of services, which must be specified as a
-comma-separated list.
+comma-separated list or a JSON array.
 
-Each entry in the list is interpreted as either a module name to
-load (when it ends with C<::>) or a function to call (all other
-cases). The algorithm to find the function is the same as used for C<<
+Each string entry in the list is interpreted as either a module name to
+load (when it ends with C<::>) or a function to call (all other cases).
+
+Each entry which is an array itself (you need to use JSON format to
+specify those) is interpreted as a function name and the arguments to
+pass.
+
+The algorithm to find the function is the same as used for C<<
 L<AnyEvent::MP>::spawn >>.
+
+Example: run the globa service (which runs anyway, but this doesn't hurt).
+
+   aemp setservices AnyEvent::MP::Global::
+
+Example: call the mymod::myfun function with arguments 1, 2 and 3.
+
+   aemp setservices '[["mymod::myfun", 1,2,3]]'
 
 =item delservices
 
@@ -398,6 +442,18 @@ use common::sense;
 # should come before anything else, so all modules
 # will be loaded on each restart
 BEGIN {
+   if (@ARGV == 1 && $ARGV[0] =~ /^\[/) {
+      require JSON::XS;
+      @ARGV = @{ JSON::XS->new->utf8->decode (shift) };
+   } else {
+      for (@ARGV) {
+         if (/^[\[\{\"]/) {
+            require JSON::XS;
+            $_ = JSON::XS->new->utf8->allow_nonref->decode ($_);
+         }
+      }
+   }
+
    if ($ARGV[0] eq "run") {
       shift;
 
@@ -492,6 +548,23 @@ sub trace {
    $cv->recv;
 }
 
+sub node_eval {
+   my ($node, $expr) = @_;
+
+   init;
+
+   my $cv = AE::cv;
+   my $to = AE::timer 5, 0, sub { exit 1 };
+   AnyEvent::MP::Kernel::eval_on $node, $expr, port { &$cv };
+   mon $node, $cv;
+
+   my ($err, @res) = $cv->recv;
+
+   die "$err @res" if length $err;
+
+   print +(substr JSON::XS->new->encode (\@res), 1, -1), "\n";
+}
+
 sub docmd;
 
 our %CMD = (
@@ -510,14 +583,12 @@ our %CMD = (
       print join " ", $cv->recv, "\n";
    },
 
-   rpc => sub {
+   cal => sub {
       my $port = shift @ARGV;
       init;
 
       my $cv = AE::cv;
-      my $to = AE::timer 5, 0, sub { exit 1 };
-      snd $port, @ARGV, port { &$cv }; @ARGV = ();
-      mon $port, $cv;
+      cal $port, @ARGV, sub { &$cv }; @ARGV = ();
 
       print +(substr JSON::XS->new->encode ([$cv->recv]), 1, -1), "\n";
    },
@@ -533,18 +604,7 @@ our %CMD = (
    eval => sub {
       my $node = node_of shift @ARGV;
       my $expr = join " ", @ARGV; @ARGV = ();
-      init;
-
-      my $cv = AE::cv;
-      my $to = AE::timer 5, 0, sub { exit 1 };
-      AnyEvent::MP::Kernel::eval_on $node, $expr, port { &$cv };
-      mon $node, $cv;
-
-      my ($err, @res) = $cv->recv;
-
-      die $err if length $err;
-
-      print +(substr JSON::XS->new->encode (\@res), 1, -1), "\n";
+      node_eval $node, $expr;
    },
 
    trace => sub {
@@ -552,6 +612,10 @@ our %CMD = (
          or die "node id missing\n";
 
       trace shift @ARGV;
+   },
+   restart => sub {
+      my $node = node_of shift @ARGV;
+      node_eval $node, 'my $w; $w = AE::idle sub { undef $w; AnyEvent::Watchdog::Util::restart }; ()';
    },
 
    setnodeid => sub {
@@ -605,7 +669,8 @@ our %CMD = (
    setbinds => sub {
       @ARGV >= 1
          or die "bind addresses missing\n";
-      $profile->{binds} = [split /,/, shift @ARGV];
+      my $list = shift @ARGV;
+      $profile->{binds} = ref $list ? $list : [split /,/, $list];
       ++$cfg->{dirty};
    },
    delbinds => sub {
@@ -633,7 +698,8 @@ our %CMD = (
    setseeds => sub {
       @ARGV >= 1
          or die "seed addresses missing\n";
-      $profile->{seeds} = [split /,/, shift @ARGV];
+      my $list = shift @ARGV;
+      $profile->{seeds} = ref $list ? $list : [split /,/, $list];
       ++$cfg->{dirty};
    },
    delseeds => sub {
@@ -661,7 +727,8 @@ our %CMD = (
    setservices => sub {
       @ARGV >= 1
          or die "service specifications missing\n";
-      $profile->{services} = [split /,/, shift @ARGV];
+      my $list = shift @ARGV;
+      $profile->{services} = ref $list ? $list : [split /,/, $list];
       ++$cfg->{dirty};
    },
    delservices => sub {

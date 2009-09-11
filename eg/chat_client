@@ -16,7 +16,7 @@ $| = 1;
 my ($client, $server);
 
 sub server_connect {
-   my $servernodes = AnyEvent::MP::Global::find "eg_chat_server"
+   my $servernodes = grp_get "eg_chat_server"
       or return after 1, \&server_connect;
 
    print "\rconnecting...\n";

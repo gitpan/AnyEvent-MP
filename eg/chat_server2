@@ -9,7 +9,7 @@ use AnyEvent::MP::Global;
 
 configure;
 
-AnyEvent::MP::Global::register $NODE, "eg_chat_server2";
+grp_reg eg_chat_server2 => $NODE;
 
 my %clients;
 

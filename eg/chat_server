@@ -36,7 +36,7 @@ rcv $server, privmsg => sub {
    msg "$nick: $msg";
 };
 
-AnyEvent::MP::Global::register $server, "eg_chat_server";
+grp_reg eg_chat_server => $server;
 
 warn "server ready.\n";
 

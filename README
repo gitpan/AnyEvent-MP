@@ -38,11 +38,11 @@ SYNOPSIS
 CURRENT STATUS
        bin/aemp                - stable.
        AnyEvent::MP            - stable API, should work.
-       AnyEvent::MP::Intro     - epxlains most concepts.
+       AnyEvent::MP::Intro     - explains most concepts.
        AnyEvent::MP::Kernel    - mostly stable.
-       AnyEvent::MP::Global    - stable API, protocol not yet final.
+       AnyEvent::MP::Global    - stable but incomplete, protocol not yet final.
 
-       stay tuned.
+    stay tuned.
 
 DESCRIPTION
     This module (-family) implements a simple message passing framework.
@@ -55,8 +55,8 @@ DESCRIPTION
 
 CONCEPTS
     port
-        A port is something you can send messages to (with the "snd"
-        function).
+        Not to be confused with a TCP port, a "port" is something you can
+        send messages to (with the "snd" function).
 
         Ports allow you to register "rcv" handlers that can match all or
         just some messages. Messages send to ports will not be queued,
@@ -76,7 +76,7 @@ CONCEPTS
         private (no listening ports). Private nodes cannot talk to other
         private nodes currently.
 
-    node ID - "[a-za-Z0-9_\-.:]+"
+    node ID - "[A-Z_][a-zA-Z0-9_\-.:]*"
         A node ID is a string that uniquely identifies the node within a
         network. Depending on the configuration used, node IDs can look like
         a hostname, a hostname and a port, or a random string. AnyEvent::MP
@@ -89,19 +89,35 @@ CONCEPTS
         "ip:port" specifications can be used, which specify TCP ports to
         listen on.
 
-    seeds - "host:port"
+    seed nodes
         When a node starts, it knows nothing about the network. To teach the
         node about the network it first has to contact some other node
         within the network. This node is called a seed.
 
-        Seeds are transport endpoint(s) of as many nodes as one wants. Those
-        nodes are expected to be long-running, and at least one of those
-        should always be available. When nodes run out of connections (e.g.
-        due to a network error), they try to re-establish connections to
-        some seednodes again to join the network.
+        Apart from the fact that other nodes know them as seed nodes and
+        they have to have fixed listening addresses, seed nodes are
+        perfectly normal nodes - any node can function as a seed node for
+        others.
 
-        Apart from being sued for seeding, seednodes are not special in any
-        way - every public node can be a seednode.
+        In addition to discovering the network, seed nodes are also used to
+        maintain the network and to connect nodes that otherwise would have
+        trouble connecting. They form the backbone of an AnyEvent::MP
+        network.
+
+        Seed nodes are expected to be long-running, and at least one seed
+        node should always be available. They should also be relatively
+        responsive - a seed node that blocks for long periods will slow down
+        everybody else.
+
+    seeds - "host:port"
+        Seeds are transport endpoint(s) (usually a hostname/IP address and a
+        TCP port) of nodes thta should be used as seed nodes.
+
+        The nodes listening on those endpoints are expected to be
+        long-running, and at least one of those should always be available.
+        When nodes run out of connections (e.g. due to a network error),
+        they try to re-establish connections to some seednodes again to join
+        the network.
 
 VARIABLES/FUNCTIONS
     $thisnode = NODE / $NODE
@@ -112,6 +128,7 @@ VARIABLES/FUNCTIONS
     $nodeid = node_of $port
         Extracts and returns the node ID from a port ID or a node ID.
 
+    configure $profile, key => value...
     configure key => value...
         Before a node can talk to other nodes on the network (i.e. enter
         "distributed mode") it has to configure itself - the minimum a node
@@ -125,13 +142,14 @@ VARIABLES/FUNCTIONS
         step 1, gathering configuration from profiles
             The function first looks up a profile in the aemp configuration
             (see the aemp commandline utility). The profile name can be
-            specified via the named "profile" parameter. If it is missing,
-            then the nodename (uname -n) will be used as profile name.
+            specified via the named "profile" parameter or can simply be the
+            first parameter). If it is missing, then the nodename (uname -n)
+            will be used as profile name.
 
             The profile data is then gathered as follows:
 
             First, all remaining key => value pairs (all of which are
-            conviniently undocumented at the moment) will be interpreted as
+            conveniently undocumented at the moment) will be interpreted as
             configuration data. Then they will be overwritten by any values
             specified in the global default configuration (see the aemp
             utility), then the chain of profiles chosen by the profile name
@@ -163,7 +181,7 @@ VARIABLES/FUNCTIONS
             the AnyEvent::MP::Global module, which will then use it to keep
             connectivity with at least one node at any point in time.
 
-        Example: become a distributed node using the locla node name as
+        Example: become a distributed node using the local node name as
         profile. This should be the most common form of invocation for
         "daemon"-type nodes.
 
@@ -317,25 +335,13 @@ VARIABLES/FUNCTIONS
         messages to it were lost, and optionally return a guard that can be
         used to stop monitoring again.
 
-        "mon" effectively guarantees that, in the absence of hardware
-        failures, after starting the monitor, either all messages sent to
-        the port will arrive, or the monitoring action will be invoked after
-        possible message loss has been detected. No messages will be lost
-        "in between" (after the first lost message no further messages will
-        be received by the port). After the monitoring action was invoked,
-        further messages might get delivered again.
-
-        Note that monitoring-actions are one-shot: once messages are lost
-        (and a monitoring alert was raised), they are removed and will not
-        trigger again.
-
         In the first form (callback), the callback is simply called with any
         number of @reason elements (no @reason means that the port was
         deleted "normally"). Note also that *the callback must never die*,
         so use "eval" if unsure.
 
         In the second form (another port given), the other port ($rcvport)
-        will be "kil"'ed with @reason, iff a @reason was specified, i.e. on
+        will be "kil"'ed with @reason, if a @reason was specified, i.e. on
         "normal" kils nothing happens, while under all other conditions, the
         other port is killed with the same reason.
 
@@ -345,12 +351,34 @@ VARIABLES/FUNCTIONS
         In the last form (message), a message of the form "@msg, @reason"
         will be "snd".
 
+        Monitoring-actions are one-shot: once messages are lost (and a
+        monitoring alert was raised), they are removed and will not trigger
+        again.
+
         As a rule of thumb, monitoring requests should always monitor a port
         from a local port (or callback). The reason is that kill messages
         might get lost, just like any other message. Another less obvious
-        reason is that even monitoring requests can get lost (for exmaple,
+        reason is that even monitoring requests can get lost (for example,
         when the connection to the other node goes down permanently). When
         monitoring a port locally these problems do not exist.
+
+        "mon" effectively guarantees that, in the absence of hardware
+        failures, after starting the monitor, either all messages sent to
+        the port will arrive, or the monitoring action will be invoked after
+        possible message loss has been detected. No messages will be lost
+        "in between" (after the first lost message no further messages will
+        be received by the port). After the monitoring action was invoked,
+        further messages might get delivered again.
+
+        Inter-host-connection timeouts and monitoring depend on the
+        transport used. The only transport currently implemented is TCP, and
+        AnyEvent::MP relies on TCP to detect node-downs (this can take 10-15
+        minutes on a non-idle connection, and usually around two hours for
+        idle conenctions).
+
+        This means that monitoring is good for program errors and cleaning
+        up stuff eventually, but they are no replacement for a timeout when
+        you need to ensure some maximum latency.
 
         Example: call a given callback when $port is killed.
 
@@ -416,12 +444,18 @@ VARIABLES/FUNCTIONS
         exists or it runs out of package names.
 
         The init function is then called with the newly-created port as
-        context object ($SELF) and the @initdata values as arguments.
+        context object ($SELF) and the @initdata values as arguments. It
+        *must* call one of the "rcv" functions to set callbacks on $SELF,
+        otherwise the port might not get created.
 
         A common idiom is to pass a local port, immediately monitor the
         spawned port, and in the remote init function, immediately monitor
         the passed local port. This two-way monitoring ensures that both
         ports get cleaned up when there is a problem.
+
+        "spawn" guarantees that the $initfunc has no visible effects on the
+        caller before "spawn" returns (by delaying invocation when spawn is
+        called for the local node).
 
         Example: spawn a chat server port on $othernode.
 
@@ -449,6 +483,26 @@ VARIABLES/FUNCTIONS
         AnyEvent::MP author is not convinced of the wisdom of having it,
         though, so it may go away in the future.
 
+    cal $port, @msg, $callback[, $timeout]
+        A simple form of RPC - sends a message to the given $port with the
+        given contents (@msg), but adds a reply port to the message.
+
+        The reply port is created temporarily just for the purpose of
+        receiving the reply, and will be "kil"ed when no longer needed.
+
+        A reply message sent to the port is passed to the $callback as-is.
+
+        If an optional time-out (in seconds) is given and it is not "undef",
+        then the callback will be called without any arguments after the
+        time-out elapsed and the port is "kil"ed.
+
+        If no time-out is given, then the local port will monitor the remote
+        port instead, so it eventually gets cleaned-up.
+
+        Currently this function returns the temporary port, but this
+        "feature" might go in future versions unless you can make a
+        convincing case that this is indeed useful for something.
+
 AnyEvent::MP vs. Distributed Erlang
     AnyEvent::MP got lots of its ideas from distributed Erlang (Erlang node
     == aemp node, Erlang process == aemp port), so many of the documents and
@@ -466,7 +520,7 @@ AnyEvent::MP vs. Distributed Erlang
 
         Erlang relies on special naming and DNS to work everywhere in the
         same way. AEMP relies on each node somehow knowing its own
-        address(es) (e.g. by configuraiton or DNS), but will otherwise
+        address(es) (e.g. by configuration or DNS), but will otherwise
         discover other odes itself.
 
     *   Erlang has a "remote ports are like local ports" philosophy, AEMP
@@ -490,7 +544,7 @@ AnyEvent::MP vs. Distributed Erlang
         therefore needs a queue. AEMP is event based, queuing messages would
         serve no useful purpose. For the same reason the pattern-matching
         abilities of AnyEvent::MP are more limited, as there is little need
-        to be able to filter messages without dequeing them.
+        to be able to filter messages without dequeuing them.
 
         (But see Coro::MP for a more Erlang-like process model on top of
         AEMP).
@@ -602,6 +656,9 @@ SEE ALSO
 
     AnyEvent::MP::Global - network maintainance and port groups, to find
     your applications.
+
+    AnyEvent::MP::LogCatcher - simple service to display log messages from
+    all nodes.
 
     AnyEvent.
 

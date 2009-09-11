@@ -94,6 +94,7 @@ sub transport_connect {
    $self->transport_error (transport_error => "switched connections")
       if $self->{transport};
 
+   delete $self->{connect_addr};
    delete $self->{connect_w};
    delete $self->{connect_to};
 
@@ -118,18 +119,25 @@ sub connect {
 
    Scalar::Util::weaken $self;
 
-   my $monitor = $AnyEvent::MP::Config::CFG{monitor_timeout} || $AnyEvent::MP::Kernel::MONITOR_TIMEOUT;
+   my $monitor = $AnyEvent::MP::Kernel::CONFIG->{monitor_timeout};
 
    $self->{connect_to} ||= AE::timer $monitor, 0, sub {
       $self->transport_error (transport_error => $self->{id}, "unable to connect");
    };
 
    return unless @addresses;
-   return if $self->{connect_w};
+
+   if ($self->{connect_w}) {
+      # sometimes we get told about new addresses after we started to connect
+      unshift @{$self->{connect_addr}}, @addresses;
+      return;
+   }
+
+   $self->{connect_addr} = \@addresses; # a bit weird, but efficient
 
    $AnyEvent::MP::Kernel::WARN->(9, "connecting to $self->{id} with [@addresses]");
 
-   my $interval = $AnyEvent::MP::Config::CFG{connect_interval} || $AnyEvent::MP::Kernel::CONNECT_INTERVAL;
+   my $interval = $AnyEvent::MP::Kernel::CONFIG->{connect_interval};
 
    $interval = ($monitor - $interval) / @addresses
       if ($monitor - $interval) / @addresses < $interval;
@@ -201,12 +209,32 @@ sub connect {
    # we are trivially connected
 }
 
+# delay every so often to avoid recursion, also used to delay after spawn
+our $DELAY;
+our @DELAY;
+our $DELAY_W;
+
+sub _send_delayed {
+   local $AnyEvent::MP::Kernel::SRCNODE = $AnyEvent::MP::Kernel::NODE{""};
+   (shift @DELAY)->()
+      while @DELAY;
+   undef $DELAY_W;
+   $DELAY = -50;
+}
+
 sub transport_reset {
    my ($self) = @_;
 
    Scalar::Util::weaken $self;
 
    $self->{send} = sub {
+      if ($DELAY++ >= 0) {
+         my $msg = $_[0];
+         push @DELAY, sub { AnyEvent::MP::Kernel::_inject (@$msg) };
+         $DELAY_W ||= AE::timer 0, 0, \&_send_delayed;
+         return;
+      }
+
       local $AnyEvent::MP::Kernel::SRCNODE = $self;
       AnyEvent::MP::Kernel::_inject (@{ $_[0] });
    };
@@ -221,29 +249,41 @@ sub transport_connect {
 sub kill {
    my ($self, $port, @reason) = @_;
 
-   delete $AnyEvent::MP::Kernel::PORT{$port};
-   delete $AnyEvent::MP::Kernel::PORT_DATA{$port};
+   my $delay_cb = sub {
+      delete $AnyEvent::MP::Kernel::PORT{$port};
+      delete $AnyEvent::MP::Kernel::PORT_DATA{$port};
 
-   my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}
-      or !@reason
-      or $AnyEvent::MP::Kernel::WARN->(2, "unmonitored local port $port died with reason: @reason");
+      my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}
+         or !@reason
+         or $AnyEvent::MP::Kernel::WARN->(8, "unmonitored local port $port died with reason: @reason");
 
-   $_->(@reason) for values %$mon;
+      $_->(@reason) for values %$mon;
+   };
+
+   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
 }
 
 sub monitor {
    my ($self, $portid, $cb) = @_;
 
-   return $cb->(no_such_port => "cannot monitor nonexistent port")
-      unless exists $AnyEvent::MP::Kernel::PORT{$portid};
+   my $delay_cb = sub {
+      return $cb->(no_such_port => "cannot monitor nonexistent port", "$self->{id}#$portid")
+         unless exists $AnyEvent::MP::Kernel::PORT{$portid};
 
-   $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0} = $cb;
+      $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0} = $cb;
+   };
+
+   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
 }
 
 sub unmonitor {
    my ($self, $portid, $cb) = @_;
 
-   delete $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0};
+   my $delay_cb = sub {
+      delete $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0};
+   };
+
+   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
 }
 
 =head1 SEE ALSO
