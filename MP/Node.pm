@@ -210,7 +210,7 @@ sub connect {
 }
 
 # delay every so often to avoid recursion, also used to delay after spawn
-our $DELAY;
+our $DELAY = -50;
 our @DELAY;
 our $DELAY_W;
 
@@ -250,7 +250,8 @@ sub kill {
    my ($self, $port, @reason) = @_;
 
    my $delay_cb = sub {
-      delete $AnyEvent::MP::Kernel::PORT{$port};
+      delete $AnyEvent::MP::Kernel::PORT{$port}
+         or return; # killing nonexistent ports is O.K.
       delete $AnyEvent::MP::Kernel::PORT_DATA{$port};
 
       my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}

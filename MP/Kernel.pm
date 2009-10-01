@@ -35,7 +35,7 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '1.1';
+our $VERSION = '1.2';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
    add_node load_func snd_to_func snd_on eval_on
@@ -181,7 +181,7 @@ our $DELAY_TIMER;
 our @DELAY_QUEUE;
 
 sub _delay_run {
-   (shift @DELAY_QUEUE or return)->() while 1;
+   (shift @DELAY_QUEUE or return undef $DELAY_TIMER)->() while 1;
 }
 
 sub delay($) {
@@ -415,6 +415,7 @@ sub configure(@) {
             prepare => sub {
                my (undef, $host, $port) = @_;
                $bind = AnyEvent::Socket::format_hostport $host, $port;
+               0
             },
          ;
          $LISTENER{$bind} = $listener;

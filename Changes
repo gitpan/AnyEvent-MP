@@ -3,6 +3,18 @@ Revision history for AnyEvent::MP
 TODO: testsuite
 TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
+TODO: use gvpe method of making contact, if possible.
+
+1.2  Thu Oct  1 22:59:35 CEST 2009
+        - fix a rather big bug where message processing could be
+          inhibited completely.
+	- grp_mon could not return a guard due to a typo.
+	- implement primitive aemp shell.
+        - do not use bound address as listen length (reported by
+          Felix Antonius Wilhelm Ostman).
+        - no longer export an undefined "reg" function from AE::MP.
+        - the mon_guard return value no longer keeps an additional
+          reference to the passed refs.
 
 1.1  Fri Sep 11 04:34:03 CEST 2009
 	- bumped the transport protocol to version 1 - sorry, but there

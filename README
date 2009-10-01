@@ -1,5 +1,5 @@
 NAME
-    AnyEvent::MP - multi-processing/message-passing framework
+    AnyEvent::MP - erlang-style multi-processing/message-passing framework
 
 SYNOPSIS
        use AnyEvent::MP;
@@ -31,18 +31,16 @@ SYNOPSIS
        my $port = spawn $node, $initfunc, @initdata;
 
        # monitoring
-       mon $port, $cb->(@msg)      # callback is invoked on death
-       mon $port, $otherport       # kill otherport on abnormal death
-       mon $port, $otherport, @msg # send message on death
+       mon $localport, $cb->(@msg)      # callback is invoked on death
+       mon $localport, $otherport       # kill otherport on abnormal death
+       mon $localport, $otherport, @msg # send message on death
 
 CURRENT STATUS
        bin/aemp                - stable.
        AnyEvent::MP            - stable API, should work.
        AnyEvent::MP::Intro     - explains most concepts.
-       AnyEvent::MP::Kernel    - mostly stable.
-       AnyEvent::MP::Global    - stable but incomplete, protocol not yet final.
-
-    stay tuned.
+       AnyEvent::MP::Kernel    - mostly stable API.
+       AnyEvent::MP::Global    - stable API.
 
 DESCRIPTION
     This module (-family) implements a simple message passing framework.
@@ -111,7 +109,7 @@ CONCEPTS
 
     seeds - "host:port"
         Seeds are transport endpoint(s) (usually a hostname/IP address and a
-        TCP port) of nodes thta should be used as seed nodes.
+        TCP port) of nodes that should be used as seed nodes.
 
         The nodes listening on those endpoints are expected to be
         long-running, and at least one of those should always be available.
@@ -374,7 +372,7 @@ VARIABLES/FUNCTIONS
         transport used. The only transport currently implemented is TCP, and
         AnyEvent::MP relies on TCP to detect node-downs (this can take 10-15
         minutes on a non-idle connection, and usually around two hours for
-        idle conenctions).
+        idle connections).
 
         This means that monitoring is good for program errors and cleaning
         up stuff eventually, but they are no replacement for a timeout when
@@ -509,10 +507,10 @@ AnyEvent::MP vs. Distributed Erlang
     programming techniques employed by Erlang apply to AnyEvent::MP. Here is
     a sample:
 
-       http://www.Erlang.se/doc/programming_rules.shtml
-       http://Erlang.org/doc/getting_started/part_frame.html # chapters 3 and 4
-       http://Erlang.org/download/Erlang-book-part1.pdf      # chapters 5 and 6
-       http://Erlang.org/download/armstrong_thesis_2003.pdf  # chapters 4 and 5
+       http://www.erlang.se/doc/programming_rules.shtml
+       http://erlang.org/doc/getting_started/part_frame.html # chapters 3 and 4
+       http://erlang.org/download/erlang-book-part1.pdf      # chapters 5 and 6
+       http://erlang.org/download/armstrong_thesis_2003.pdf  # chapters 4 and 5
 
     Despite the similarities, there are also some important differences:
 

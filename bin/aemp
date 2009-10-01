@@ -13,6 +13,7 @@
    aemp mon <port>               # wait till port is killed
    aemp cal <port> <arg...>      # send message, append reply
    aemp eval <node> <expr...>    # evaluate expression
+   aemp shell [<node>]           # run an interactive shell
    aemp trace <node>             # trace the network topology
 
    # run a node
@@ -548,6 +549,53 @@ sub trace {
    $cv->recv;
 }
 
+sub shell {
+   init;
+
+   my $node = shift @ARGV || $NODE;
+   $| = 1;
+
+   print <<EOF;
+Entering interactive shell - no commandline editing of course (use rlfe etc.).
+
+\=           display a list of nodes
+\=name       switch to another node
+
+EOF
+   print "$node> ";
+   my $cv = AE::cv;
+   my $t = AE::io *STDIN, 0, sub {
+      chomp (my $line = <STDIN>);
+
+      if ($line =~ s/^=//) {
+         if (length $line) {
+            $node = $line;
+         } else {
+            print +(join " ", AnyEvent::MP::Kernel::up_nodes), "\n";
+         }
+      } else {
+         my $time = AE::time;
+         AnyEvent::MP::Kernel::eval_on $node, $line, port {
+            my ($err, @res) = @_;
+
+            $time = AE::time - $time;
+
+            print "\n  $node: $line\n";
+            if (length $err) {
+               print "  $err @res";
+            } else {
+               print "  ", JSON::XS::encode_json \@_;
+            }
+            printf "\n  %0.3fs\n", $time;
+            print "$node> ";
+         };
+      }
+
+      print "$node> ";
+   };
+   $cv->recv;
+}
+
 sub node_eval {
    my ($node, $expr) = @_;
 
@@ -606,6 +654,8 @@ our %CMD = (
       my $expr = join " ", @ARGV; @ARGV = ();
       node_eval $node, $expr;
    },
+
+   shell => \&shell,
 
    trace => sub {
       @ARGV >= 1

@@ -1,6 +1,6 @@
 =head1 NAME
 
-AnyEvent::MP - multi-processing/message-passing framework
+AnyEvent::MP - erlang-style multi-processing/message-passing framework
 
 =head1 SYNOPSIS
 
@@ -33,19 +33,17 @@ AnyEvent::MP - multi-processing/message-passing framework
    my $port = spawn $node, $initfunc, @initdata;
 
    # monitoring
-   mon $port, $cb->(@msg)      # callback is invoked on death
-   mon $port, $otherport       # kill otherport on abnormal death
-   mon $port, $otherport, @msg # send message on death
+   mon $localport, $cb->(@msg)      # callback is invoked on death
+   mon $localport, $otherport       # kill otherport on abnormal death
+   mon $localport, $otherport, @msg # send message on death
 
 =head1 CURRENT STATUS
 
    bin/aemp                - stable.
    AnyEvent::MP            - stable API, should work.
    AnyEvent::MP::Intro     - explains most concepts.
-   AnyEvent::MP::Kernel    - mostly stable.
-   AnyEvent::MP::Global    - stable but incomplete, protocol not yet final.
-
-stay tuned.
+   AnyEvent::MP::Kernel    - mostly stable API.
+   AnyEvent::MP::Global    - stable API.
 
 =head1 DESCRIPTION
 
@@ -120,7 +118,7 @@ seed node that blocks for long periods will slow down everybody else.
 =item seeds - C<host:port>
 
 Seeds are transport endpoint(s) (usually a hostname/IP address and a
-TCP port) of nodes thta should be used as seed nodes.
+TCP port) of nodes that should be used as seed nodes.
 
 The nodes listening on those endpoints are expected to be long-running,
 and at least one of those should always be available. When nodes run out
@@ -152,7 +150,7 @@ our $VERSION = $AnyEvent::MP::Kernel::VERSION;
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
    configure
-   snd rcv mon mon_guard kil reg psub spawn cal
+   snd rcv mon mon_guard kil psub spawn cal
    port
 );
 
@@ -527,7 +525,7 @@ delivered again.
 Inter-host-connection timeouts and monitoring depend on the transport
 used. The only transport currently implemented is TCP, and AnyEvent::MP
 relies on TCP to detect node-downs (this can take 10-15 minutes on a
-non-idle connection, and usually around two hours for idle conenctions).
+non-idle connection, and usually around two hours for idle connections).
 
 This means that monitoring is good for program errors and cleaning up
 stuff eventually, but they are no replacement for a timeout when you need
@@ -569,7 +567,7 @@ sub mon {
    $node->monitor ($port, $cb);
 
    defined wantarray
-      and AnyEvent::Util::guard { $node->unmonitor ($port, $cb) }
+      and ($cb += 0, AnyEvent::Util::guard { $node->unmonitor ($port, $cb) })
 }
 
 =item $guard = mon_guard $port, $ref, $ref...
@@ -778,10 +776,10 @@ AnyEvent::MP got lots of its ideas from distributed Erlang (Erlang node
 programming techniques employed by Erlang apply to AnyEvent::MP. Here is a
 sample:
 
-   http://www.Erlang.se/doc/programming_rules.shtml
-   http://Erlang.org/doc/getting_started/part_frame.html # chapters 3 and 4
-   http://Erlang.org/download/Erlang-book-part1.pdf      # chapters 5 and 6
-   http://Erlang.org/download/armstrong_thesis_2003.pdf  # chapters 4 and 5
+   http://www.erlang.se/doc/programming_rules.shtml
+   http://erlang.org/doc/getting_started/part_frame.html # chapters 3 and 4
+   http://erlang.org/download/erlang-book-part1.pdf      # chapters 5 and 6
+   http://erlang.org/download/armstrong_thesis_2003.pdf  # chapters 4 and 5
 
 Despite the similarities, there are also some important differences:
 

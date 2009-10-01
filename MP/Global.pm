@@ -46,6 +46,8 @@ our @EXPORT = qw(
 
 our $VERSION = $AnyEvent::MP::VERSION;
 
+our $GLOBAL_VERSION = 0;
+
 our %addr; # port ID => [address...] mapping
 
 our %port; # our rendezvous port on the other side
@@ -281,7 +283,7 @@ sub grp_mon($$) {
       $cb->(((grp_get $grp) || return) x 2, []);
    };
 
-   defined wantarray && AnyEvent::Util::::guard {
+   defined wantarray && AnyEvent::Util::guard {
       my @mon = grep $_ != $cb, @{ delete $gmon{$grp} };
       $gmon{$grp} = \@mon if @mon;
       undef $cb;
@@ -295,7 +297,7 @@ sub start_node {
    return if $node eq $NODE; # do not connect to ourselves
 
    # establish connection
-   my $port = $port{$node} = spawn $node, "AnyEvent::MP::Global::connect", 0, $NODE;
+   my $port = $port{$node} = spawn $node, "AnyEvent::MP::Global::connect", $GLOBAL_VERSION, $NODE;
 
    mon $port, sub {
       unreg_groups $node;
@@ -310,6 +312,9 @@ sub start_node {
 # other nodes connect via this
 sub connect {
    my ($version, $node) = @_;
+
+   (int $version) == (int $GLOBAL_VERSION)
+      or die "node version mismatch (requested $version; we have $GLOBAL_VERSION)";
 
    # monitor them, silently die
    mon $node, psub {
