@@ -35,7 +35,6 @@ use AnyEvent::MP::Transport;
 
 use base "Exporter";
 
-our $VERSION = '1.2';
 our @EXPORT = qw(
    %NODE %PORT %PORT_DATA $UNIQ $RUNIQ $ID
    add_node load_func snd_to_func snd_on eval_on
@@ -559,6 +558,7 @@ our %node_req = (
       my $node   = $SRCNODE;
       Scalar::Util::weaken $node; #TODO# ugly
       $NODE{""}->monitor ($portid, $node->{rmon}{$portid} = sub {
+         delete $node->{rmon}{$portid};
          $node->send (["", kil => $portid, @_])
             if $node && $node->{transport}; #TODO# ugly, should use snd and remove-on-disconnect
       });

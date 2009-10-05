@@ -494,8 +494,8 @@ VARIABLES/FUNCTIONS
         then the callback will be called without any arguments after the
         time-out elapsed and the port is "kil"ed.
 
-        If no time-out is given, then the local port will monitor the remote
-        port instead, so it eventually gets cleaned-up.
+        If no time-out is given (or it is "undef"), then the local port will
+        monitor the remote port instead, so it eventually gets cleaned-up.
 
         Currently this function returns the temporary port, but this
         "feature" might go in future versions unless you can make a
@@ -518,8 +518,9 @@ AnyEvent::MP vs. Distributed Erlang
 
         Erlang relies on special naming and DNS to work everywhere in the
         same way. AEMP relies on each node somehow knowing its own
-        address(es) (e.g. by configuration or DNS), but will otherwise
-        discover other odes itself.
+        address(es) (e.g. by configuration or DNS), and possibly the
+        addresses of some seed nodes, but will otherwise discover other
+        nodes (and their IDs) itself.
 
     *   Erlang has a "remote ports are like local ports" philosophy, AEMP
         uses "local ports are like remote ports".
@@ -555,8 +556,8 @@ AnyEvent::MP vs. Distributed Erlang
 
     *   Erlang suffers from silent message loss, AEMP does not.
 
-        Erlang makes few guarantees on messages delivery - messages can get
-        lost without any of the processes realising it (i.e. you send
+        Erlang implements few guarantees on messages delivery - messages can
+        get lost without any of the processes realising it (i.e. you send
         messages a, b, and c, and the other side only receives messages a
         and c).
 

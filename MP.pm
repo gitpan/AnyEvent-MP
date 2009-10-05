@@ -145,7 +145,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = $AnyEvent::MP::Kernel::VERSION;
+our $VERSION = 1.21;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -729,8 +729,8 @@ If an optional time-out (in seconds) is given and it is not C<undef>,
 then the callback will be called without any arguments after the time-out
 elapsed and the port is C<kil>ed.
 
-If no time-out is given, then the local port will monitor the remote port
-instead, so it eventually gets cleaned-up.
+If no time-out is given (or it is C<undef>), then the local port will
+monitor the remote port instead, so it eventually gets cleaned-up.
 
 Currently this function returns the temporary port, but this "feature"
 might go in future versions unless you can make a convincing case that
@@ -789,7 +789,8 @@ Despite the similarities, there are also some important differences:
 
 Erlang relies on special naming and DNS to work everywhere in the same
 way. AEMP relies on each node somehow knowing its own address(es) (e.g. by
-configuration or DNS), but will otherwise discover other odes itself.
+configuration or DNS), and possibly the addresses of some seed nodes, but
+will otherwise discover other nodes (and their IDs) itself.
 
 =item * Erlang has a "remote ports are like local ports" philosophy, AEMP
 uses "local ports are like remote ports".
@@ -824,9 +825,9 @@ connection establishment is handled in the background.
 
 =item * Erlang suffers from silent message loss, AEMP does not.
 
-Erlang makes few guarantees on messages delivery - messages can get lost
-without any of the processes realising it (i.e. you send messages a, b,
-and c, and the other side only receives messages a and c).
+Erlang implements few guarantees on messages delivery - messages can get
+lost without any of the processes realising it (i.e. you send messages a,
+b, and c, and the other side only receives messages a and c).
 
 AEMP guarantees correct ordering, and the guarantee that after one message
 is lost, all following ones sent to the same port are lost as well, until

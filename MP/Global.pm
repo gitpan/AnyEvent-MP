@@ -44,8 +44,6 @@ our @EXPORT = qw(
    grp_mon
 );
 
-our $VERSION = $AnyEvent::MP::VERSION;
-
 our $GLOBAL_VERSION = 0;
 
 our %addr; # port ID => [address...] mapping

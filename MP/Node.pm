@@ -261,7 +261,11 @@ sub kill {
       $_->(@reason) for values %$mon;
    };
 
-   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
+   # we _always_ delay kil's, to avoid calling mon callbacks
+   # from anything but the event loop context.
+   $DELAY = 1;
+   push @DELAY, $delay_cb;
+   $DELAY_W ||= AE::timer 0, 0, \&_send_delayed;
 }
 
 sub monitor {

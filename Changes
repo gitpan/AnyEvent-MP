@@ -5,6 +5,12 @@ TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
 TODO: use gvpe method of making contact, if possible.
 
+1.21 Mon Oct  5 21:58:36 CEST 2009
+	- always delay kil messages.
+        - remote monitor requests were never cleaned up (found by
+          Sadrak and analysed by elmex).
+        - move $VERSION to AnyEvent::MP and AnyEvent::MP only.
+
 1.2  Thu Oct  1 22:59:35 CEST 2009
         - fix a rather big bug where message processing could be
           inhibited completely.

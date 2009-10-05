@@ -9,7 +9,7 @@ my $mm = MM->new({
        SUFFIX	=> '.gz',
 	            },
     NAME         => "AnyEvent::MP",
-    VERSION_FROM => "MP/Kernel.pm",
+    VERSION_FROM => "MP.pm",
     EXE_FILES    => ["bin/aemp"],
     PREREQ_PM    => {
        AnyEvent           => 5.11,
