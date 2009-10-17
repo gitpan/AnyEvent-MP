@@ -479,14 +479,15 @@ still be there, by recovering and restarting the service.
 AnyEvent::MP supports this by catching exceptions and network problems,
 and notifying interested parties of this.
 
-=head2 Exceptions, Network Errors and Monitors
+=head2 Exceptions, Port Context, Network Errors and Monitors
 
 =head3 Exceptions
 
 Exceptions are handled on a per-port basis: receive callbacks are executed
-in a special context, the port-context, and code that throws an uncaught
-exception will cause the port to be C<kil>led. Killed ports are destroyed
-automatically (killing ports is the only way to free ports, incidentally).
+in a special context, the so-called I<port-context>: code that throws an
+otherwise uncaught exception will cause the port to be C<kil>led. Killed
+ports are destroyed automatically (killing ports is the only way to free
+ports, incidentally).
 
 Ports can be monitored, even from a different host, and when a port is
 killed any entity monitoring it will be notified.
@@ -577,8 +578,8 @@ handler wants to C<die> a second later, using C<after>:
 Then you will find it does not work - when the after callback is executed,
 it does not run in port context anymore, so exceptions will not be caught.
 
-For these cases, AnyEvent::MP exports a special "close constructor" called
-C<psub>, which works just like perl's builtin C<sub>:
+For these cases, AnyEvent::MP exports a special "closure constructor"
+called C<psub>, which works just like perl's builtin C<sub>:
 
   my $port = port {
      after 1, psub { die "oops" };
@@ -587,6 +588,16 @@ C<psub>, which works just like perl's builtin C<sub>:
 C<psub> stores C<$SELF> and returns a code reference. When the code
 reference is invoked, it will run the code block within the context of
 that port, so exception handling once more works as expected.
+
+There is also a way to temporarily execute code in the context of some
+port, namely C<peval>:
+
+  peval $port, sub {
+     # die'ing here will kil $port
+  };
+
+The C<peval> function temporarily replaces C<$SELF> by the given C<$port>
+and then executes the given sub in a port context.
 
 =head3 Network Errors and the AEMP Guarantee
 
@@ -1038,6 +1049,174 @@ irc backend running.
 That's plenty of possibilities you can use - it's all up to you how you
 structure your application.
 
+=head1 PART 4: Coro::MP - selective receive
+
+Not all problems lend themselves naturally to an event-based solution:
+sometimes things are easier if you can decide in what order you want to
+receive messages, irregardless of the order in which they were sent.
+
+In these cases, L<Coro::MP> can provide a nice solution: instead of
+registering callbacks for each message type, C<Coro::MP> attached a
+(coro-) thread to a port. The thread can then opt to selectively receive
+messages it is interested in. Other messages are not lost, but queued, and
+can be received at a later time.
+
+The C<Coro::MP> module is not part of L<AnyEvent::MP>, but a seperate
+module. It is, however, tightly integrated into C<AnyEvent::MP> - the
+ports it creates are fully compatible to C<AnyEvent::MP> ports.
+
+In fact, C<Coro::MP> is more of an extension than a separate module: all
+functions exported by C<AnyEvent::MP> are exported by it as well.
+
+To illustrate how programing with C<Coro::MP> looks like, consider the
+following (slightly contrived) example: Let's implement a server that
+accepts a C<< (write_file =>, $port, $path) >> message with a (source)
+port and a filename, followed by as many C<< (data => $port, $data) >>
+messages as required to fill the file, followed by an empty C<< (data =>
+$port) >> message.
+
+The server only writes a single file at a time, other requests will stay
+in the queue until the current file has been finished.
+
+Here is an example implementation that uses L<Coro::AIO> and largely
+ignores error handling:
+
+   my $ioserver = port_async {
+      while () {
+         my ($tag, $port, $path) = get_cond;
+
+         $tag eq "write_file"
+            or die "only write_file messages expected";
+
+         my $fh = aio_open $path, O_WRONLY|O_CREAT, 0666
+            or die "$path: $!";
+
+         while () {
+            my (undef, undef, $data) = get_cond {
+               $_[0] eq "data" && $_[1] eq $port
+            } 5
+               or die "timeout waiting for data message from $port\n";
+
+            length $data or last;
+
+            aio_write $fh, undef, undef, $data, 0;
+         };
+      }
+   };
+
+   mon $ioserver, sub {
+      warn "ioserver was killed: @_\n";
+   }; 
+
+Let's go through it part by part.
+
+   my $ioserver = port_async {
+
+Ports cna be created by attaching a thread to an existing port via
+C<rcv_async>, or as here by calling C<port_async> with the code to exeucte
+as a thread. The C<async> component comes from the fact that threads are
+created using the C<Coro::async> function.
+
+The thread runs in a normal port context (so C<$SELF> is set). In
+addition, when the thread returns, it will be C<kil> I<normally>, i.e.
+without a reason argument.
+
+      while () {
+         my ($tag, $port, $path) = get_cond;
+            or die "only write_file messages expected";
+
+The thread is supposed to serve many file writes, which is why it executes
+in a loop. The first thing it does is fetch the next message, using
+C<get_cond>, the "conditional message get". Without a condition, it simply
+fetches the next message from the queue, which I<must> be a C<write_file>
+message.
+
+The message contains the C<$path> to the file, which is then created:
+
+         my $fh = aio_open $path, O_WRONLY|O_CREAT, 0666
+            or die "$path: $!";
+
+Then we enter a loop again, to serve as many C<data> messages as
+neccessary:
+
+         while () {
+            my (undef, undef, $data) = get_cond {
+               $_[0] eq "data" && $_[1] eq $port
+            } 5
+               or die "timeout waiting for data message from $port\n";
+
+This time, the condition is not empty, but instead a code block: similarly
+to grep, the code block will be called with C<@_> set to each message in
+the queue, and it has to return whether it wants to receive the message or
+not.
+
+In this case we are interested in C<data> messages (C<< $_[0] eq "data"
+>>), whose first element is the source port (C<< $_[1] eq $port >>).
+
+The condition must be this strict, as it is possible to receive both
+C<write_file> messages and C<data> messages from other ports while we
+handle the file writing.
+
+The lone C<5> at the end is a timeout - when no matching message is
+received within C<5> seconds, we assume an error and C<die>.
+
+When an empty C<data> message is received we are done and can close the
+file (which is done automatically as C<$fh> goes out of scope):
+
+            length $data or last;
+
+Otherwise we need to write the data:
+
+            aio_write $fh, undef, undef, $data, 0;
+
+That's basically it. Note that every process should ahve some kind of
+supervisor. In our case, the supervisor simply prints any error message:
+
+   mon $ioserver, sub {
+      warn "ioserver was killed: @_\n";
+   }; 
+
+Here is a usage example:
+
+   port_async {
+      snd $ioserver, write_file => $SELF, "/tmp/unsafe";
+      snd $ioserver, data => $SELF, "abc\n";
+      snd $ioserver, data => $SELF, "def\n";
+      snd $ioserver, data => $SELF;
+   }; 
+
+The messages are sent without any flow control or acknowledgement (feel
+free to improve). Also, the source port does not actually need to be a
+port - any unique ID will do - but port identifiers happen to be a simple
+source of network-wide unique IDs.
+
+Apart from C<get_cond> as seen above, there are other ways to receive
+messages. The C<write_file> message above could also selectively be
+received using a C<get> call:
+
+   my ($port, $path) = get "write_file";
+
+This is simpler, but when some other code part sends an unexpected message
+to the C<$ioserver> it will stay in the queue forever. As a rule of thumb,
+every threaded port should have a "fetch next message unconditionally"
+somewhere, to avoid filling up the queue.
+
+It is also possible to switch-like C<get_conds>:
+
+  get_cond {
+     $_[0] eq "msg1" and return sub {
+        my (undef, @msg1_data) = @_;
+        ...;
+     };
+
+     $_[0] eq "msg2" and return sub {
+        my (undef, @msg2_data) = @_;
+        ...;
+     };
+
+     die "unexpected message $_[0] received";
+  };
+
 =head1 THE END
 
 This is the end of this introduction, but hopefully not the end of
@@ -1051,6 +1230,8 @@ it will be useful to create exciting new applications.
 L<AnyEvent::MP>
 
 L<AnyEvent::MP::Global>
+
+L<Coro::MP>
 
 L<AnyEvent>
 

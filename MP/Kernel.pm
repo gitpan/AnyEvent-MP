@@ -556,11 +556,11 @@ our %node_req = (
    mon1 => sub { # start monitoring a port
       my $portid = shift;
       my $node   = $SRCNODE;
-      Scalar::Util::weaken $node; #TODO# ugly
+      Scalar::Util::weaken $node;
       $NODE{""}->monitor ($portid, $node->{rmon}{$portid} = sub {
          delete $node->{rmon}{$portid};
          $node->send (["", kil => $portid, @_])
-            if $node && $node->{transport}; #TODO# ugly, should use snd and remove-on-disconnect
+            if $node && $node->{transport};
       });
    },
    kil => sub {

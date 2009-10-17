@@ -30,10 +30,22 @@ SYNOPSIS
        # create a port on another node
        my $port = spawn $node, $initfunc, @initdata;
 
+       # destroy a prot again
+       kil $port;  # "normal" kill
+       kil $port, my_error => "everything is broken"; # error kill
+
        # monitoring
        mon $localport, $cb->(@msg)      # callback is invoked on death
        mon $localport, $otherport       # kill otherport on abnormal death
        mon $localport, $otherport, @msg # send message on death
+
+       # temporarily execute code in port context
+       peval $port, sub { die "kill the port!" };
+
+       # execute callbacks in $SELF port context
+       my $timer = AE::timer 1, 0, psub {
+          die "kill the port, delayed";
+       };
 
 CURRENT STATUS
        bin/aemp                - stable.
@@ -301,7 +313,7 @@ VARIABLES/FUNCTIONS
            ;
 
         Example: temporarily register a rcv callback for a tag matching some
-        port (e.g. for a rpc reply) and unregister it after a message was
+        port (e.g. for an rpc reply) and unregister it after a message was
         received.
 
            rcv $port, $otherport => sub {
@@ -310,11 +322,34 @@ VARIABLES/FUNCTIONS
               rcv $SELF, $otherport;
            };
 
+    peval $port, $coderef[, @args]
+        Evaluates the given $codref within the contetx of $port, that is,
+        when the code throews an exception the $port will be killed.
+
+        Any remaining args will be passed to the callback. Any return values
+        will be returned to the caller.
+
+        This is useful when you temporarily want to execute code in the
+        context of a port.
+
+        Example: create a port and run some initialisation code in it's
+        context.
+
+           my $port = port { ... };
+
+           peval $port, sub {
+              init
+                 or die "unable to init";
+           };
+
     $closure = psub { BLOCK }
         Remembers $SELF and creates a closure out of the BLOCK. When the
         closure is executed, sets up the environment in the same way as in
         "rcv" callbacks, i.e. runtime errors will cause the port to get
         "kil"ed.
+
+        The effect is basically as if it returned "sub { peval $SELF, sub {
+        BLOCK } }".
 
         This is useful when you register callbacks from "rcv" callbacks:
 

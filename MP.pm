@@ -32,10 +32,22 @@ AnyEvent::MP - erlang-style multi-processing/message-passing framework
    # create a port on another node
    my $port = spawn $node, $initfunc, @initdata;
 
+   # destroy a prot again
+   kil $port;  # "normal" kill
+   kil $port, my_error => "everything is broken"; # error kill
+
    # monitoring
    mon $localport, $cb->(@msg)      # callback is invoked on death
    mon $localport, $otherport       # kill otherport on abnormal death
    mon $localport, $otherport, @msg # send message on death
+
+   # temporarily execute code in port context
+   peval $port, sub { die "kill the port!" };
+
+   # execute callbacks in $SELF port context
+   my $timer = AE::timer 1, 0, psub {
+      die "kill the port, delayed";
+   };
 
 =head1 CURRENT STATUS
 
@@ -145,12 +157,12 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.21;
+our $VERSION = 1.22;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
    configure
-   snd rcv mon mon_guard kil psub spawn cal
+   snd rcv mon mon_guard kil psub peval spawn cal
    port
 );
 
@@ -373,7 +385,7 @@ in one go:
    ;
 
 Example: temporarily register a rcv callback for a tag matching some port
-(e.g. for a rpc reply) and unregister it after a message was received.
+(e.g. for an rpc reply) and unregister it after a message was received.
 
    rcv $port, $otherport => sub {
       my @reply = @_;
@@ -396,7 +408,7 @@ sub rcv($@) {
             "AnyEvent::MP::Port" eq ref $self
                or Carp::croak "$port: rcv can only be called on message matching ports, caught";
 
-            $self->[2] = shift;
+            $self->[0] = shift;
          } else {
             my $cb = shift;
             $PORT{$portid} = sub {
@@ -406,7 +418,7 @@ sub rcv($@) {
          }
       } elsif (defined $_[0]) {
          my $self = $PORT_DATA{$portid} ||= do {
-            my $self = bless [$PORT{$port} || sub { }, { }, $port], "AnyEvent::MP::Port";
+            my $self = bless [$PORT{$portid} || sub { }, { }, $port], "AnyEvent::MP::Port";
 
             $PORT{$portid} = sub {
                local $SELF = $port;
@@ -438,11 +450,51 @@ sub rcv($@) {
    $port
 }
 
+=item peval $port, $coderef[, @args]
+
+Evaluates the given C<$codref> within the contetx of C<$port>, that is,
+when the code throews an exception the C<$port> will be killed.
+
+Any remaining args will be passed to the callback. Any return values will
+be returned to the caller.
+
+This is useful when you temporarily want to execute code in the context of
+a port.
+
+Example: create a port and run some initialisation code in it's context.
+
+   my $port = port { ... };
+
+   peval $port, sub {
+      init
+         or die "unable to init";
+   };
+
+=cut
+
+sub peval($$) {
+   local $SELF = shift;
+   my $cb = shift;
+
+   if (wantarray) {
+      my @res = eval { &$cb };
+      _self_die if $@;
+      @res
+   } else {
+      my $res = eval { &$cb };
+      _self_die if $@;
+      $res
+   }
+}
+
 =item $closure = psub { BLOCK }
 
 Remembers C<$SELF> and creates a closure out of the BLOCK. When the
 closure is executed, sets up the environment in the same way as in C<rcv>
 callbacks, i.e. runtime errors will cause the port to get C<kil>ed.
+
+The effect is basically as if it returned C<< sub { peval $SELF, sub {
+BLOCK } } >>.
 
 This is useful when you register callbacks from C<rcv> callbacks:
 

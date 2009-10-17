@@ -5,6 +5,14 @@ TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
 TODO: use gvpe method of making contact, if possible.
 
+1.22 Sat Oct 17 03:41:47 CEST 2009
+	- fix two rcv-bugs: after adding a tagged rcv, the default
+          callback would not be used or changed anymore (reported
+          by Felix Antonius Wilhelm Ostmann, with apologies for
+          taking so long to releae the fix).
+	- added Coro::MP introduction to AnyEvent::MP::Intro.
+	- add peval function.
+
 1.21 Mon Oct  5 21:58:36 CEST 2009
 	- always delay kil messages.
         - remote monitor requests were never cleaned up (found by
