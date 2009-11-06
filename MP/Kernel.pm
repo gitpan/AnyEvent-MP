@@ -99,7 +99,13 @@ sub load_func($) {
       do {
          $pkg =~ s/::[^:]+$//
             or return sub { die "unable to resolve '$func'" };
-         eval "require $pkg";
+
+         local $@;
+         unless (eval "require $pkg; 1") {
+            my $error = $@;
+            $error =~ /^Can't locate .*.pm in \@INC \(/
+               or return sub { die $error };
+         }
       } until defined &$func;
    }
 
@@ -527,7 +533,7 @@ sub mon_nodes($) {
 
    $MON_NODES{$cb+0} = $cb;
 
-   wantarray && AnyEvent::Util::guard { delete $MON_NODES{$cb+0} }
+   defined wantarray && AnyEvent::Util::guard { delete $MON_NODES{$cb+0} }
 }
 
 sub _inject_nodeevent($$;@) {

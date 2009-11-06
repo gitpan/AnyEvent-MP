@@ -236,7 +236,7 @@ sub grp_reg($$) {
 
    _change $group, [$port], [];
 
-   wantarray && AnyEvent::Util::guard { unregister $port, $group }
+   defined wantarray && AnyEvent::Util::guard { unregister $port, $group }
 }
 
 =item $ports = grp_get $group
@@ -326,9 +326,8 @@ sub connect {
          $AnyEvent::MP::Kernel::WARN->(9, "$node told us its addresses (@$addresses).");
          $addr{$node} = $addresses;
 
-         for my $node (keys %SEEDME) {
-            my $port = $port{$node};
-            snd $port, nodes => { $node => $addresses };
+         for my $slave (keys %SEEDME) {
+            snd $port{$slave}, nodes => { $node => $addresses };
          }
       },
       nodes => sub {

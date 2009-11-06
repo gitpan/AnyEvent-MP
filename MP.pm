@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.22;
+our $VERSION = 1.23;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after

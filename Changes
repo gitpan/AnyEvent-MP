@@ -4,6 +4,21 @@ TODO: testsuite
 TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
 TODO: use gvpe method of making contact, if possible.
+TODO: explain service sin aemp
+
+1.23 Fri Nov  6 18:46:26 CET 2009
+        - listener-less nodes were misinformed by their masters about
+          the location of new nodes, and therefore didn't connect
+          properly in all cases.
+        - messages send during node-up processing could sometimes get lost,
+          which would hamper global's ability to mesh the network.
+        - fixed AnyEvent::MP::Global::grp_reg to return a guard also
+          in scalar context.
+        - fixed AnyEvent::MP::Kernel::mon_nodes to return a guard also
+          in scalar context.
+        - try to improve error reporting when automatically loading
+          a function - being unable to load a module will now
+          stop the process and report the error.
 
 1.22 Sat Oct 17 03:41:47 CEST 2009
 	- fix two rcv-bugs: after adding a tagged rcv, the default

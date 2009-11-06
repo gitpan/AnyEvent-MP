@@ -45,6 +45,12 @@ our @HOOK_CONNECT;   # called at connect/accept time
 our @HOOK_GREETING;  # called at greeting1 time
 our @HOOK_CONNECTED; # called at data phase
 our @HOOK_DESTROY;   # called at destroy time
+our %HOOK_PROTOCOL = (
+   "aemp-dataconn" => sub {
+      require AnyEvent::MP::DataConn;
+      &AnyEvent::MP::DataConn::_inject;
+   },
+);
 
 =item $listener = mp_listener $host, $port, <constructor-args>
 
@@ -117,8 +123,6 @@ sub new {
 
    my $self = bless \%arg, $class;
 
-   $self->{queue} = [];
-
    {
       Scalar::Util::weaken (my $self = $self);
 
@@ -164,11 +168,13 @@ sub new {
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
       $greeting_kv->{timeout}  = $self->{timeout};
 
+      my $protocol = $self->{protocol} || "aemp";
+
       # can modify greeting_kv
-      $_->($self) for @HOOK_CONNECT;
+      $_->($self) for $protocol eq "aemp" ? @HOOK_CONNECT : ();
 
       # send greeting
-      my $lgreeting1 = "aemp;$PROTOCOL_VERSION"
+      my $lgreeting1 = "$protocol;$PROTOCOL_VERSION"
                      . ";$AnyEvent::MP::Kernel::NODE"
                      . ";" . (join ",", @$auth_rcv)
                      . ";" . (join ",", @$lframing)
@@ -192,10 +198,10 @@ sub new {
                @kv
          };
 
-         $_->($self) for @HOOK_GREETING;
+         $_->($self) for $protocol eq "aemp" ? @HOOK_GREETING : ();
 
-         if ($aemp ne "aemp") {
-            return $self->error ("unparsable greeting");
+         if ($aemp ne $protocol) {
+            return $self->error ("unparsable greeting, expected '$protocol', got '$aemp'");
          } elsif ($version != $PROTOCOL_VERSION) {
             return $self->error ("version mismatch (we: $PROTOCOL_VERSION, they: $version)");
          } elsif ($rnode eq $AnyEvent::MP::Kernel::NODE) {
@@ -285,35 +291,31 @@ sub new {
                # we rely on TCP retransmit timeouts and keepalives
                $self->{hdl}->rtimeout (undef);
 
-               # except listener-less nodes, they need to continuously probe
-               unless (@$AnyEvent::MP::Kernel::LISTENER) {
-                  $self->{hdl}->wtimeout ($timeout);
-                  $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
-               }
-
                $self->{remote_greeting}{untrusted} = 1
                   if $auth_method eq "tls_anon";
 
-               my $queue = delete $self->{queue}; # we are connected
-
                $self->connected;
 
-               # send queued messages
-               $self->send ($_)
-                  for @$queue;
+               if ($protocol eq "aemp") {
+                  # listener-less node need to continuously probe
+                  unless (@$AnyEvent::MP::Kernel::LISTENER) {
+                     $self->{hdl}->wtimeout ($timeout);
+                     $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
+                  }
 
-               # receive handling
-               my $src_node = $self->{node};
-               my $rmsg; $rmsg = $self->{rmsg} = sub {
-                  $_[0]->push_read ($r_framing => $rmsg);
+                  # receive handling
+                  my $src_node = $self->{node};
+                  my $rmsg; $rmsg = $self->{rmsg} = sub {
+                     $_[0]->push_read ($r_framing => $rmsg);
 
-                  local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
-                  AnyEvent::MP::Kernel::_inject (@{ $_[1] });
-               };
-               $hdl->push_read ($r_framing => $rmsg);
+                     local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+                     AnyEvent::MP::Kernel::_inject (@{ $_[1] });
+                  };
+                  $hdl->push_read ($r_framing => $rmsg);
 
-               Scalar::Util::weaken $rmsg;
-               Scalar::Util::weaken $src_node;
+                  Scalar::Util::weaken $rmsg;
+                  Scalar::Util::weaken $src_node;
+               }
             });
          });
       });
@@ -327,10 +329,14 @@ sub error {
 
    delete $self->{keepalive};
 
-   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} $msg");#d#
+   if ($self->{protocol}) {
+      $HOOK_PROTOCOL{$self->{protocol}}->($self, $msg);
+   } else {
+      $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} $msg");#d#
 
-   $self->{node}->transport_error (transport_error => $self->{node}{id}, $msg)
-      if $self->{node} && $self->{node}{transport} == $self;
+      $self->{node}->transport_error (transport_error => $self->{node}{id}, $msg)
+         if $self->{node} && $self->{node}{transport} == $self;
+   }
 
    (delete $self->{release})->()
       if exists $self->{release};
@@ -347,13 +353,18 @@ sub connected {
    (delete $self->{release})->()
       if exists $self->{release};
 
-   $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} connected as $self->{remote_node}");
+   if ($self->{protocol}) {
+      $self->{hdl}->on_error (undef);
+      $HOOK_PROTOCOL{$self->{protocol}}->($self, undef);
+   } else {
+      $AnyEvent::MP::Kernel::WARN->(9, "$self->{peerhost}:$self->{peerport} connected as $self->{remote_node}");
 
-   my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
-   Scalar::Util::weaken ($self->{node} = $node);
-   $node->transport_connect ($self);
+      my $node = AnyEvent::MP::Kernel::add_node ($self->{remote_node});
+      Scalar::Util::weaken ($self->{node} = $node);
+      $node->transport_connect ($self);
 
-   $_->($self) for @HOOK_CONNECTED;
+      $_->($self) for @HOOK_CONNECTED;
+   }
 }
 
 sub send {
@@ -369,7 +380,7 @@ sub destroy {
    $self->{hdl}->destroy
       if $self->{hdl};
 
-   $_->($self) for @HOOK_DESTROY;
+   $_->($self) for $self->{protocol} ? () : @HOOK_DESTROY;
 }
 
 sub DESTROY {
@@ -382,9 +393,9 @@ sub DESTROY {
 
 =head1 PROTOCOL
 
-The AEMP protocol is relatively simple, and consists of three phases which
-are symmetrical for both sides: greeting (followed by optionally switching
-to TLS mode), authentication and packet exchange.
+The AEMP protocol is comparatively simple, and consists of three phases
+which are symmetrical for both sides: greeting (followed by optionally
+switching to TLS mode), authentication and packet exchange.
 
 The protocol is designed to allow both full-text and binary streams.
 

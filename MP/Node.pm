@@ -102,11 +102,11 @@ sub transport_connect {
 
    my $transport_send = $transport->can ("send");
 
+   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 1);
+
    $self->{send} = sub {
       $transport_send->($transport, $_[0]);
    };
-
-   AnyEvent::MP::Kernel::_inject_nodeevent ($self, 1);
 
    $transport->send ($_)
       for @{ delete $self->{queue} || [] };
