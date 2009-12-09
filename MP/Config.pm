@@ -20,8 +20,9 @@ use Carp ();
 use AnyEvent ();
 use JSON::XS ();
 
-our $CONFIG_FILE = $ENV{HOME} ? "$ENV{HOME}/.perl-anyevent-mp"
-                              : "$ENV{APPDATA}/perl-anyevent-mp";
+our $CONFIG_FILE = exists $ENV{PERL_ANYEVENT_MP_RC} ? $ENV{PERL_ANYEVENT_MP_RC}
+                   : exists $ENV{HOME}              ? "$ENV{HOME}/.perl-anyevent-mp"
+                   :                                  "$ENV{APPDATA}/perl-anyevent-mp";
 
 our %CFG;
 

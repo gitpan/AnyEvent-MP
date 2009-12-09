@@ -152,8 +152,8 @@ sub new {
 
       $self->{hdl} = new AnyEvent::Handle
          +($self->{fh} ? (fh => $self->{fh}) : (connect => $self->{connect})),
-         autocork  => 1,
-         no_delay  => 1,
+         autocork  => $config->{autocork},
+         no_delay  => exists $config->{nodelay} ? $config->{nodelay} : 1,
          keepalive => 1,
          on_error  => sub {
             $self->error ($_[2]);
@@ -164,9 +164,8 @@ sub new {
       my $greeting_kv = $self->{local_greeting} ||= {};
 
       $greeting_kv->{tls}      = "1.0" if $self->{tls_ctx};
-      $greeting_kv->{provider} = "AE-$AnyEvent::MP::Kernel::VERSION";
+      $greeting_kv->{provider} = "AE-$AnyEvent::MP::VERSION"; # MP.pm might not be loaded, so best effort :(
       $greeting_kv->{peeraddr} = AnyEvent::Socket::format_hostport $self->{peerhost}, $self->{peerport};
-      $greeting_kv->{timeout}  = $self->{timeout};
 
       my $protocol = $self->{protocol} || "aemp";
 
@@ -198,16 +197,24 @@ sub new {
                @kv
          };
 
+         # maybe upgrade the protocol
+         if ($protocol eq "aemp" and $aemp =~ /^aemp-\w+$/) {
+            # maybe check for existence of the protocol handler?
+            $self->{protocol} = $protocol = $aemp;
+         }
+
          $_->($self) for $protocol eq "aemp" ? @HOOK_GREETING : ();
 
-         if ($aemp ne $protocol) {
+         if ($aemp ne $protocol and $aemp ne "aemp") {
             return $self->error ("unparsable greeting, expected '$protocol', got '$aemp'");
          } elsif ($version != $PROTOCOL_VERSION) {
             return $self->error ("version mismatch (we: $PROTOCOL_VERSION, they: $version)");
-         } elsif ($rnode eq $AnyEvent::MP::Kernel::NODE) {
-            return $self->error ("I refuse to talk to myself");
-         } elsif ($AnyEvent::MP::Kernel::NODE{$rnode} && $AnyEvent::MP::Kernel::NODE{$rnode}{transport}) {
-            return $self->error ("$rnode already connected, not connecting again.");
+         } elsif ($protocol eq "aemp") {
+            if ($rnode eq $AnyEvent::MP::Kernel::NODE) {
+               return $self->error ("I refuse to talk to myself");
+            } elsif ($AnyEvent::MP::Kernel::NODE{$rnode} && $AnyEvent::MP::Kernel::NODE{$rnode}{transport}) {
+               return $self->error ("$rnode already connected, not connecting again.");
+            }
          }
 
          # read nonce
@@ -350,9 +357,6 @@ sub connected {
 
    delete $self->{keepalive};
 
-   (delete $self->{release})->()
-      if exists $self->{release};
-
    if ($self->{protocol}) {
       $self->{hdl}->on_error (undef);
       $HOOK_PROTOCOL{$self->{protocol}}->($self, undef);
@@ -365,6 +369,9 @@ sub connected {
 
       $_->($self) for @HOOK_CONNECTED;
    }
+
+   (delete $self->{release})->()
+      if exists $self->{release};
 }
 
 sub send {

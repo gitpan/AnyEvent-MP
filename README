@@ -691,6 +691,8 @@ SEE ALSO
     AnyEvent::MP::Global - network maintainance and port groups, to find
     your applications.
 
+    AnyEvent::MP::DataConn - establish data connections between nodes.
+
     AnyEvent::MP::LogCatcher - simple service to display log messages from
     all nodes.
 

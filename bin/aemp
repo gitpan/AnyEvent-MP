@@ -80,9 +80,9 @@ Please note that all C<setxxx> subcommands have an alias without the
 C<set> prefix.
 
 All configuration data is stored in a human-readable (JSON) config file
-stored in F<~/.perl-anyevent-mp> (or F<%appdata%/perl-anyevent-mp>
-on loser systems). Feel free to look at it or edit it, the format is
-relatively simple.
+stored in F<~/.perl-anyevent-mp> (or F<%appdata%/perl-anyevent-mp> on
+loser systems, or wherever C<$ENV{PERL_ANYEVENT_MPRC}> points to). Feel
+free to look at it or edit it, the format is relatively simple.
 
 =head2 SPECIFYING ARGUMENTS
 
@@ -665,7 +665,11 @@ our %CMD = (
    },
    restart => sub {
       my $node = node_of shift @ARGV;
-      node_eval $node, 'my $w; $w = AE::idle sub { undef $w; AnyEvent::Watchdog::Util::restart }; ()';
+      node_eval $node, 'my $w; $w = AE::idle sub { '
+                       . 'undef $w; '
+                       . 'use AnyEvent::Watchdog::Util ();'
+                       . 'AnyEvent::Watchdog::Util::restart'
+                       . '}; ()';
    },
 
    setnodeid => sub {
@@ -700,8 +704,10 @@ our %CMD = (
       @ARGV >= 1
          or die "key+certificate pem filename missing\n";
 
-      open my $fh, "<", $ARGV[0]
-         or die "$ARGV[0]: $!";
+      my $certfile = shift @ARGV;
+
+      open my $fh, "<", $certfile
+         or die "$certfile: $!";
 
       local $/;
       $profile->{cert} = <$fh>;

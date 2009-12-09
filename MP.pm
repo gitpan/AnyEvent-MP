@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.23;
+our $VERSION = 1.24;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -980,6 +980,8 @@ L<AnyEvent::MP::Kernel> - more, lower-level, stuff.
 
 L<AnyEvent::MP::Global> - network maintainance and port groups, to find
 your applications.
+
+L<AnyEvent::MP::DataConn> - establish data connections between nodes.
 
 L<AnyEvent::MP::LogCatcher> - simple service to display log messages from
 all nodes.

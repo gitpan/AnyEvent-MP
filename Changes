@@ -1,10 +1,19 @@
 Revision history for AnyEvent::MP
 
-TODO: testsuite
-TODO: intro: maybe simple job pool example?
-TODO: intro: mention watchdog...
-TODO: use gvpe method of making contact, if possible.
-TODO: explain service sin aemp
+1.24 Wed Dec  9 14:59:52 CET 2009
+	- codename "the foul egg".
+	- increased "unmonitored local port died" message level to 2, so
+          it is displayed by default now.
+        - generate random seed at configure time, not module loading time,
+          so fork&configure works as expected.
+        - decreased "seed"-related message priority in Global from 0 (d'oh)
+          to 9, as they are not signifcant.
+	- new experimental module AnyEvent::MP::DataConn to establish
+          additional data connections between nodes.
+        - bin/aemp now loads AnyEvent::Watchdog::Util before trying
+          to call restart.
+        - bin/aemp setcert didn't properly handle the filename argument.
+        - removed empty and unused timeout= parameter from protocol greeting.
 
 1.23 Fri Nov  6 18:46:26 CET 2009
         - listener-less nodes were misinformed by their masters about

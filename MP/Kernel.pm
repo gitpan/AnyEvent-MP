@@ -98,7 +98,7 @@ sub load_func($) {
       my $pkg = $func;
       do {
          $pkg =~ s/::[^:]+$//
-            or return sub { die "unable to resolve '$func'" };
+            or return sub { die "unable to resolve function '$func'" };
 
          local $@;
          unless (eval "require $pkg; 1") {
@@ -150,10 +150,10 @@ sub gen_uniq {
 
 our $CONFIG; # this node's configuration
 
-our $RUNIQ  = alnumbits nonce 96/8; # remote uniq value
-our $UNIQ   = gen_uniq; # per-process/node unique cookie
-our $NODE   = "anon/$RUNIQ";
-our $ID     = "a";
+our $RUNIQ; # remote uniq value
+our $UNIQ;  # per-process/node unique cookie
+our $NODE;
+our $ID = "a";
 
 our %NODE; # node id to transport mapping, or "undef", for local node
 our (%PORT, %PORT_DATA); # local ports
@@ -165,6 +165,14 @@ our %LISTENER;
 our $LISTENER; # our listeners, as arrayref
 
 our $SRCNODE; # holds the sending node during _inject
+
+sub _seed {
+   $RUNIQ = alnumbits nonce 96/8;
+   $UNIQ  = gen_uniq;
+   $NODE  = "anon/$RUNIQ";
+}
+
+_seed;
 
 sub NODE() {
    $NODE
@@ -380,14 +388,15 @@ sub configure(@) {
    unshift @_, "profile" if @_ & 1;
    my (%kv) = @_;
 
+   delete $NODE{$NODE}; # we do not support doing stuff before configure
+   _seed;
+
    my $profile = delete $kv{profile};
 
    $profile = _nodename
       unless defined $profile;
 
    $CONFIG = AnyEvent::MP::Config::find_profile $profile, %kv;
-
-   delete $NODE{$NODE}; # we do not support doing stuff before configure
 
    my $node = exists $CONFIG->{nodeid} ? $CONFIG->{nodeid} : $profile;
 

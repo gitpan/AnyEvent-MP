@@ -256,7 +256,7 @@ sub kill {
 
       my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}
          or !@reason
-         or $AnyEvent::MP::Kernel::WARN->(8, "unmonitored local port $port died with reason: @reason");
+         or $AnyEvent::MP::Kernel::WARN->(2, "unmonitored local port $port died with reason: @reason");
 
       $_->(@reason) for values %$mon;
    };

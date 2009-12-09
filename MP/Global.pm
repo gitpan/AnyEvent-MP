@@ -46,6 +46,8 @@ our @EXPORT = qw(
 
 our $GLOBAL_VERSION = 0;
 
+our %ON_SETUP; # take note: not public
+
 our %addr; # port ID => [address...] mapping
 
 our %port; # our rendezvous port on the other side
@@ -305,6 +307,7 @@ sub start_node {
    snd $port, addr => $AnyEvent::MP::Kernel::LISTENER;
    snd $port, nodes => \%addr if %addr;
    snd $port, set => \%lreg if %lreg;
+   snd $port, "setup"; # tell the other side that we are in business now
 }
 
 # other nodes connect via this
@@ -321,6 +324,9 @@ sub connect {
    };
 
    rcv $SELF,
+      setup => sub {
+         $_->($node) for values %ON_SETUP;
+      },
       addr => sub {
          my $addresses = shift;
          $AnyEvent::MP::Kernel::WARN->(9, "$node told us its addresses (@$addresses).");
@@ -343,15 +349,15 @@ sub connect {
             start_node $id;
          }
       },
+      set => sub {
+         set_groups $node, shift;
+      },
       find => sub {
          my ($othernode) = @_;
 
          $AnyEvent::MP::Kernel::WARN->(9, "$node asked us to find $othernode.");
          snd $port{$node}, nodes => { $othernode => $addr{$othernode} }
             if $addr{$othernode};
-      },
-      set => sub {
-         set_groups $node, shift;
       },
       reg0 => sub {
          _change $_[0], [], [$_[1]];
@@ -362,11 +368,11 @@ sub connect {
 
       # some node asks us to provide network updates
       seedme0 => sub {
-         $AnyEvent::MP::Kernel::WARN->(0, "$node asked us to NOT seed it.");#d#
+         $AnyEvent::MP::Kernel::WARN->(9, "$node asked us to NOT seed it.");#d#
          delete $SEEDME{$node};
       },
       seedme1 => sub {
-         $AnyEvent::MP::Kernel::WARN->(0, "$node asked us to seed it.");#d#
+         $AnyEvent::MP::Kernel::WARN->(9, "$node asked us to seed it.");#d#
          $SEEDME{$node} = ();
 
          # for good measure
@@ -387,7 +393,7 @@ sub set_master($) {
       snd $port{$MASTER}, "seedme1";
       $AnyEvent::MP::Kernel::WARN->(7, "selected new master: $MASTER.");
    } else {
-      $AnyEvent::MP::Kernel::WARN->(1, "no contact to any other node.");
+      $AnyEvent::MP::Kernel::WARN->(1, "no contact to any other node, cannot seed.");
    }
 }
 

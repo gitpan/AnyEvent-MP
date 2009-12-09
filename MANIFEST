@@ -11,6 +11,7 @@ MP/Transport.pm
 MP/Intro.pod
 MP/Global.pm
 MP/LogCatcher.pm
+MP/DataConn.pm
 bin/aemp
 eg/chat_server
 eg/chat_client
