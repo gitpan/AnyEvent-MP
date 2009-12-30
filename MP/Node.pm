@@ -247,48 +247,34 @@ sub transport_connect {
 }
 
 sub kill {
-   my ($self, $port, @reason) = @_;
-
-   my $delay_cb = sub {
-      delete $AnyEvent::MP::Kernel::PORT{$port}
-         or return; # killing nonexistent ports is O.K.
-      delete $AnyEvent::MP::Kernel::PORT_DATA{$port};
-
-      my $mon = delete $AnyEvent::MP::Kernel::LMON{$port}
-         or !@reason
-         or $AnyEvent::MP::Kernel::WARN->(2, "unmonitored local port $port died with reason: @reason");
-
-      $_->(@reason) for values %$mon;
-   };
+   my (undef, @args) = @_;
 
    # we _always_ delay kil's, to avoid calling mon callbacks
    # from anything but the event loop context.
    $DELAY = 1;
-   push @DELAY, $delay_cb;
+   push @DELAY, sub { AnyEvent::MP::Kernel::_kill (@args) };
    $DELAY_W ||= AE::timer 0, 0, \&_send_delayed;
 }
 
 sub monitor {
-   my ($self, $portid, $cb) = @_;
-
-   my $delay_cb = sub {
-      return $cb->(no_such_port => "cannot monitor nonexistent port", "$self->{id}#$portid")
-         unless exists $AnyEvent::MP::Kernel::PORT{$portid};
-
-      $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0} = $cb;
-   };
-
-   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
+   # maybe always delay, too?
+   if ($DELAY_W) {
+      my @args = @_;
+      push @DELAY, sub { AnyEvent::MP::Kernel::_monitor (@args) };
+      return;
+   }
+   &AnyEvent::MP::Kernel::_monitor;
 }
 
 sub unmonitor {
-   my ($self, $portid, $cb) = @_;
+   # no need to always delay
+   if ($DELAY_W) {
+      my @args = @_;
+      push @DELAY, sub { AnyEvent::MP::Kernel::_unmonitor (@args) };
+      return;
+   }
 
-   my $delay_cb = sub {
-      delete $AnyEvent::MP::Kernel::LMON{$portid}{$cb+0};
-   };
-
-   $DELAY_W ? push @DELAY, $delay_cb : &$delay_cb;
+   &AnyEvent::MP::Kernel::_unmonitor;
 }
 
 =head1 SEE ALSO

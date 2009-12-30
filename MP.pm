@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.24;
+our $VERSION = 1.26;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -192,6 +192,9 @@ Before a node can talk to other nodes on the network (i.e. enter
 "distributed mode") it has to configure itself - the minimum a node needs
 to know is its own name, and optionally it should know the addresses of
 some other nodes in the network to discover other nodes.
+
+The key/value pairs are basically the same ones as documented for the
+F<aemp> command line utility (sans the set/del prefix).
 
 This function configures a node - it must be called exactly once (or
 never) before calling other AnyEvent::MP functions.
@@ -652,12 +655,12 @@ sub mon_guard {
 
 Kill the specified port with the given C<@reason>.
 
-If no C<@reason> is specified, then the port is killed "normally" (ports
-monitoring other ports will not necessarily die because a port dies
-"normally").
+If no C<@reason> is specified, then the port is killed "normally" -
+monitor callback will be invoked, but the kil will not cause linked ports
+(C<mon $mport, $lport> form) to get killed.
 
-Otherwise, linked ports get killed with the same reason (second form of
-C<mon>, see above).
+If a C<@reason> is specified, then linked ports (C<mon $mport, $lport>
+form) get killed with the same reason.
 
 Runtime errors while evaluating C<rcv> callbacks or inside C<psub> blocks
 will be reported as reason C<< die => $@ >>.

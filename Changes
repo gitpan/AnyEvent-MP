@@ -1,5 +1,22 @@
 Revision history for AnyEvent::MP
 
+TODO: testsuite
+TODO: intro: maybe simple job pool example?
+TODO: intro: mention watchdog...
+
+1.26 Wed Dec 30 16:48:37 CET 2009
+	- INCOMPATIBLE CHANGE: the high-level node protocol changed,
+          all nodes need to upgrade.
+	- remote kil's did not work (reported by Eugene Grigoriev).
+        - documented monitor_timeout, connect_interval, auth_offer,
+          auth_accept, framing_format, autocork and nodelay options
+          and make them configurable via bin/aemp.
+        - some doc updates.
+        - remote kil's were not synchronous to message sends which affected
+          nobody, as remote kils were broken.
+        - remote mon/unmonitor requests were not synchronous to message
+          sends either sometimes, although it likely didnt matter.
+
 1.24 Wed Dec  9 14:59:52 CET 2009
 	- codename "the foul egg".
 	- increased "unmonitored local port died" message level to 2, so

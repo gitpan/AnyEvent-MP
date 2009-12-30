@@ -24,12 +24,10 @@
    aemp setnodeid <nodeid>       # configure the real node id
    aemp delnodeid                # reset node id to default (= inherit)
 
-   # node configuration: secret
+   # node configuration: authentication
    aemp gensecret                # generate a random shared secret
    aemp setsecret <secret>       # set the shared secret
    aemp delsecret                # remove the secret (= inherit)
-
-   # node configuration: TLS
    aemp gencert                  # generate a random certificate
    aemp setcert <file>           # set a certificate (key.pem + certificate.pem)
    aemp delcert                  # remove certificate (= inherit)
@@ -52,13 +50,22 @@
    aemp addservice <initfunc>    # add an instance of a service
    aemp delservice <initfunc>    # delete one instance of a service
 
-   # profile-specific configuration
+   # profile management
    aemp profile <name> <command>... # apply command to profile only
    aemp setparent <name>         # specify a parent profile
    aemp delparent                # clear parent again
    aemp delprofile <name>        # eradicate the named profile
    aemp showprofile <name>       # display given profile
    aemp showconfig <name> ...    # display effective config
+
+   # node configuration: low-level protocol
+   aemp [set|del]monitor_timeout <seconds>
+   aemp [set|del]connect_interval <seconds>
+   aemp [set|del]framing_format [array]
+   aemp [set|del]auth_offer [array]
+   aemp [set|del]auth_accept [array]
+   aemp [set|del]autocork <boolean>
+   aemp [set|del]nodelay <boolean>
 
 =head1 DESCRIPTION
 
@@ -337,6 +344,16 @@ executed) when a node starts. They are especially useful when used in
 conjunction with F<aemp run>, to configure which services a node should
 run.
 
+Despite the daunting name, services really I<are> nothing more than a
+module name or a function name with arguments. The "service" aspect comes
+only from the behaviour of the module or function, which is supposed to
+implement, well, some kind of service for the node, network etc.
+
+Instead of writing a standalone program for each different node type in
+your network, you can simply put your code into a module, and then let the
+configuration decide which node runs which "services". This also makes it
+easy to combine multiple different services within the same node.
+
 =over 4
 
 =item setservices <initfunc>...
@@ -433,6 +450,76 @@ with the given profile name. Any additional key-value pairs specified
 augment the configuration, just as with C<configure>.
 
 If all arguments are omitted, show the global default config.
+
+=back
+
+=head2 LOW-LEVEL TRANSPORT PROTOCOL
+
+The low-level transport protocol betwene two nodes also has a number of
+configurable options, most of which should not be touched unless you know
+what you are doing.
+
+=over 4
+
+=item [set|del]monitor_timeout <seconds>
+
+Sets the default monitor timeout, that is, when a connection to a node
+cannot be established within this many seconds, the node is declared
+unreachable and all monitors will fire.
+
+C<30> seconds are usually a good time span for this.
+
+=item [set|del]connect_interval <seconds>
+
+When a connection cannot be established successfully within this many
+seconds, try the next transport address (e.g. the next IP address). If
+your nodes have a lot of transports, you might have to set this to a low
+value so that they will actually all be tried within the monitor timeout
+interval.
+
+C<2> is usually a good value, unless you live in new zealand.
+
+=item [set|del]framing_format [array]
+
+Configures the list of framing formats offered to the other side. This is
+simply a list of formatted read/write types used with L<AnyEvent::Handle>,
+in order of decreasing preference.
+
+Nodes support both C<json> and C<storable> framing formats for data
+packets out of the box, and usually choose C<json> because it is first in
+the list.
+
+Example: prefer the C<My::Personal::Format> framing format over JSON over
+Storable.
+
+   aemp setframing_format '["My::Personal::Format", "json", "storable"]'
+
+=item [set|del]auth_offer [array]
+
+Configures the list of authentication types that the node offers to the
+other side as acceptable, in order of decreasing preference. Only auth
+methods that the node can actually support will be offered.
+
+The default is '["tls_md6_64_256", "hmac_md6_64_256"]' and is usually good
+enough.
+
+=item [set|del]auth_accept [array]
+
+Configures the list of authentication types that remote nodes can use to
+authenticate, in order of decreasing preference.
+
+The default is '["tls_md6_64_256", "hmac_md6_64_256", "tls_anon",
+"cleartext"]' and is usually good enough.
+
+=item [set|del]autocork <boolean>
+
+Sets the default C<autocork> option value for the L<AnyEvent::Handle>
+object used by transports. By default, autocorking is off.
+
+=item [set|del]nodelay <boolean>
+
+Sets the default C<nodelay> option value for the L<AnyEvent::Handle>
+object used by transports. By default, nodelay is on.
 
 =back
 
@@ -862,6 +949,23 @@ our %CMD = (
       print +(join ",", (AnyEvent::MP::Kernel::_resolve shift @ARGV)->recv), "\n";
    },
 );
+
+for my $attr (qw(
+   monitor_timeout connect_interval framing_format auth_offer
+   auth_accept autocork nodelay
+)) {
+   $CMD{"set$attr"} = sub {
+      @ARGV >= 1
+         or die "$attr value is missing\n";
+
+      $profile->{$attr} = shift @ARGV;
+      ++$cfg->{dirty};
+   };
+   $CMD{"del$attr"} = sub {
+      delete $profile->{$attr};
+      ++$cfg->{dirty};
+   };
+}
 
 for (keys %CMD) {
    $CMD{$1} = $CMD{$_} if /^set(.*)$/;

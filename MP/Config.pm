@@ -81,7 +81,7 @@ sub find_profile($;%) {
    +{
       monitor_timeout  => 30,
       connect_interval => 2,
-      data_format      => [qw(json storable)], # framing types we offer and accept, in order of preference
+      framing_format   => [qw(json storable)], # framing types we offer and accept, in order of preference
       auth_offer       => [qw(tls_md6_64_256 hmac_md6_64_256)], # what we will send
       auth_accept      => [qw(tls_md6_64_256 hmac_md6_64_256 tls_anon cleartext)], # what we accept
       %kv,

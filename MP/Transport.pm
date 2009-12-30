@@ -129,7 +129,7 @@ sub new {
       my $config = $AnyEvent::MP::Kernel::CONFIG;
 
       my $timeout  = $config->{monitor_timeout};
-      my $lframing = $config->{data_format};
+      my $lframing = $config->{framing_format};
       my $auth_snd = $config->{auth_offer};
       my $auth_rcv = $config->{auth_accept};
 
@@ -303,7 +303,7 @@ sub new {
 
                $self->connected;
 
-               if ($protocol eq "aemp") {
+               if ($protocol eq "aemp" and $self->{hdl}) {
                   # listener-less node need to continuously probe
                   unless (@$AnyEvent::MP::Kernel::LISTENER) {
                      $self->{hdl}->wtimeout ($timeout);

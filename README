@@ -146,6 +146,9 @@ VARIABLES/FUNCTIONS
         addresses of some other nodes in the network to discover other
         nodes.
 
+        The key/value pairs are basically the same ones as documented for
+        the aemp command line utility (sans the set/del prefix).
+
         This function configures a node - it must be called exactly once (or
         never) before calling other AnyEvent::MP functions.
 
@@ -444,12 +447,12 @@ VARIABLES/FUNCTIONS
     kil $port[, @reason]
         Kill the specified port with the given @reason.
 
-        If no @reason is specified, then the port is killed "normally"
-        (ports monitoring other ports will not necessarily die because a
-        port dies "normally").
+        If no @reason is specified, then the port is killed "normally" -
+        monitor callback will be invoked, but the kil will not cause linked
+        ports ("mon $mport, $lport" form) to get killed.
 
-        Otherwise, linked ports get killed with the same reason (second form
-        of "mon", see above).
+        If a @reason is specified, then linked ports ("mon $mport, $lport"
+        form) get killed with the same reason.
 
         Runtime errors while evaluating "rcv" callbacks or inside "psub"
         blocks will be reported as reason "die => $@".

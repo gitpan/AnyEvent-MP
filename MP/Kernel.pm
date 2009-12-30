@@ -559,26 +559,50 @@ sub _inject_nodeevent($$;@) {
 #############################################################################
 # self node code
 
+sub _kill {
+   my $port = shift;
+
+   delete $PORT{$port}
+      or return; # killing nonexistent ports is O.K.
+   delete $PORT_DATA{$port};
+
+   my $mon = delete $LMON{$port}
+      or !@_
+      or $WARN->(2, "unmonitored local port $port died with reason: @_");
+
+   $_->(@_) for values %$mon;
+}
+
+sub _monitor {
+   return $_[2](no_such_port => "cannot monitor nonexistent port", "$NODE#$_[1]")
+      unless exists $PORT{$_[1]};
+
+   $LMON{$_[1]}{$_[2]+0} = $_[2];
+}
+
+sub _unmonitor {
+   delete $LMON{$_[1]}{$_[2]+0};
+}
+
 our %node_req = (
    # internal services
 
    # monitoring
-   mon0 => sub { # stop monitoring a port
+   mon0 => sub { # stop monitoring a port for another node
       my $portid = shift;
-      my $node   = $SRCNODE;
-      $NODE{""}->unmonitor ($portid, delete $node->{rmon}{$portid});
+      _unmonitor undef, $portid, delete $SRCNODE->{rmon}{$portid};
    },
-   mon1 => sub { # start monitoring a port
+   mon1 => sub { # start monitoring a port for another node
       my $portid = shift;
-      my $node   = $SRCNODE;
-      Scalar::Util::weaken $node;
-      $NODE{""}->monitor ($portid, $node->{rmon}{$portid} = sub {
+      Scalar::Util::weaken (my $node = $SRCNODE);
+      _monitor undef, $portid, $node->{rmon}{$portid} = sub {
          delete $node->{rmon}{$portid};
-         $node->send (["", kil => $portid, @_])
+         $node->send (["", kil0 => $portid, @_])
             if $node && $node->{transport};
-      });
+      };
    },
-   kil => sub {
+   # another node has killed a monitored port
+   kil0 => sub {
       my $cbs = delete $SRCNODE->{lmon}{+shift}
          or return;
 
@@ -586,6 +610,9 @@ our %node_req = (
    },
 
    # "public" services - not actually public
+
+   # another node wants to kill a local port
+   kil => \&_kill,
 
    # relay message to another node / generic echo
    snd => \&snd,
