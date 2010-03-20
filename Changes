@@ -4,6 +4,23 @@ TODO: testsuite
 TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
 
+faq: can't se anything
+faq: all is asynch
+faq: how to interface to non-perl nodes?
+
+1.27 Sat Mar 20 21:11:16 CET 2010
+	- avoid exceptions in the transport code if the connection
+          fails during TLS negotiation.
+        - delay new address broadcasts in seednodes, to reduce the
+          likelyhood of nodes connecting at the same time, leading to
+          message loss.
+        - improve general message passing efficiency by 8%, and special
+          case json framing for a 50% speed increase.
+	- add hints how to interface to aemp nodes from other programming
+          languages using the aemp protocol in AnyEvent::MP::Transport
+          (it can really be quite simple).
+        - handle unsupported remote framings more gracefully.
+
 1.26 Wed Dec 30 16:48:37 CET 2009
 	- INCOMPATIBLE CHANGE: the high-level node protocol changed,
           all nodes need to upgrade.

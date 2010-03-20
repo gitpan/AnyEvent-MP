@@ -266,7 +266,7 @@ the array is empty. None of the arrays must be modified in any way.
 
 The first invocation will be with the first two arguments set to the
 current members, as if all of them were just added, but only when the
-group is atcually non-empty.
+group is actually non-empty.
 
 Optionally returns a guard object that uninstalls the watcher when it is
 destroyed.
@@ -332,9 +332,13 @@ sub connect {
          $AnyEvent::MP::Kernel::WARN->(9, "$node told us its addresses (@$addresses).");
          $addr{$node} = $addresses;
 
-         for my $slave (keys %SEEDME) {
-            snd $port{$slave}, nodes => { $node => $addresses };
-         }
+         # delay broadcast by a random amount, to avoid nodes connecting to each other
+         # at the same time.
+         after 1 + rand 2, sub {
+            for my $slave (keys %SEEDME) {
+               snd $port{$slave}, nodes => { $node => $addresses };
+            }
+         };
       },
       nodes => sub {
          my ($kv) = @_;

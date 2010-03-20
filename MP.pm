@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.26;
+our $VERSION = 1.27;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -954,8 +954,8 @@ overhead, as well as having to keep a proxy object everywhere.
 Strings can easily be printed, easily serialised etc. and need no special
 procedures to be "valid".
 
-And as a result, a miniport consists of a single closure stored in a
-global hash - it can't become much cheaper.
+And as a result, a port with just a default receiver consists of a single
+closure stored in a global hash - it can't become much cheaper.
 
 =item Why favour JSON, why not a real serialising format such as Storable?
 

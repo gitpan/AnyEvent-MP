@@ -91,7 +91,7 @@ sub transport_connect {
 
    delete $self->{trial};
 
-   $self->transport_error (transport_error => "switched connections")
+   $self->transport_error (transport_error => $self->{id}, "switched connections")
       if $self->{transport};
 
    delete $self->{connect_addr};
@@ -100,15 +100,13 @@ sub transport_connect {
 
    $self->{transport} = $transport;
 
-   my $transport_send = $transport->can ("send");
+   my $transport_send = $transport->{send};
 
    AnyEvent::MP::Kernel::_inject_nodeevent ($self, 1);
 
-   $self->{send} = sub {
-      $transport_send->($transport, $_[0]);
-   };
+   $self->{send} = $transport_send;
 
-   $transport->send ($_)
+   $transport_send->($_)
       for @{ delete $self->{queue} || [] };
 }
 

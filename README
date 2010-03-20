@@ -667,8 +667,9 @@ RATIONALE
         Strings can easily be printed, easily serialised etc. and need no
         special procedures to be "valid".
 
-        And as a result, a miniport consists of a single closure stored in a
-        global hash - it can't become much cheaper.
+        And as a result, a port with just a default receiver consists of a
+        single closure stored in a global hash - it can't become much
+        cheaper.
 
     Why favour JSON, why not a real serialising format such as Storable?
         In fact, any AnyEvent::MP node will happily accept Storable as

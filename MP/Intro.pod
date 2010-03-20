@@ -8,14 +8,14 @@ process and to other processes on the same or a different host.
 
 What kind of messages? Basically a message here means a list of Perl
 strings, numbers, hashes and arrays, anything that can be expressed as a
-L<JSON> text (as JSON is used by default in the protocol). Here are two
-examples:
+L<JSON> text (as JSON is the default serialiser in the protocol). Here are
+two examples:
 
     write_log => 1251555874, "action was successful.\n"
     123, ["a", "b", "c"], { foo => "bar" }
 
 When using L<AnyEvent::MP> it is customary to use a descriptive string as
-first element of a message, that indictes the type of the message. This
+first element of a message, that indicates the type of the message. This
 element is called a I<tag> in L<AnyEvent::MP>, as some API functions
 (C<rcv>) support matching it directly.
 
@@ -60,7 +60,7 @@ C<BAR>.
 
 The strings for the I<port IDs> here are just for illustrative
 purposes: Even though I<ports> in L<AnyEvent::MP> are also identified by
-strings, they can't be choosen manually and are assigned by the system
+strings, they can't be chosen manually and are assigned by the system
 dynamically. These I<port IDs> are unique within a network and can also be
 used to identify senders or as message tags for instance.
 
@@ -125,7 +125,7 @@ ID> stored in C<$port>. Since in this case the receiver has a I<tag> match
 on C<test> it will call the callback with the first argument being the
 number C<123>.
 
-The callback is a typicall AnyEvent idiom: the callback just passes
+The callback is a typical AnyEvent idiom: the callback just passes
 that number on to the I<condition variable> C<$end_cv> which will then
 pass the value to the print. Condition variables are out of the scope
 of this tutorial and not often used with ports, so please consult the
@@ -173,12 +173,12 @@ C<aemp> utility later.
 =head2 Shooting the Trouble
 
 Sometimes things go wrong, and AnyEvent::MP, being a professional module,
-does not gratitiously spill out messages to your screen.
+does not gratuitously spill out messages to your screen.
 
 To help troubleshooting any issues, there are two environment variables
 that you can set. The first, C<PERL_ANYEVENT_MP_WARNLEVEL> sets the
 logging level. The default is C<5>, which means nothing much is
-printed. Youc an increase it to C<8> or C<9> to get more verbose
+printed. You can increase it to C<8> or C<9> to get more verbose
 output. This is example output when starting a node:
 
    2009-08-31 19:51:50 <8> node anon/5RloFvvYL8jfSScXNL8EpX starting up.
@@ -231,7 +231,7 @@ full:
 
 =head3 AnyEvent::MP::Global
 
-Now, that wasn't too bad, was it? Ok, let's step through the new functions
+Now, that wasn't too bad, was it? OK, let's step through the new functions
 and modules that have been used.
 
 For starters, there is now an additional module being
@@ -248,9 +248,9 @@ to communicate this somehow to the sender. And exactly that is what
 L<AnyEvent::MP::Global> provides.
 
 Especially in larger, more anonymous networks this is handy: imagine you
-have a few database backends, a few web frontends and some processing
+have a few database backends, a few web front-ends and some processing
 distributed over a number of hosts: all of these would simply register
-themselves in the appropriate group, and your web frontends can start to
+themselves in the appropriate group, and your web front-ends can start to
 find some database backend.
 
 =head3 C<configure> and the Network
@@ -305,8 +305,8 @@ Now imagine another node - C<N5> - wants to connect itself to that network:
 
 The new node needs to know the I<binds> of all nodes already
 connected. Exactly this is what the I<seeds> are for: Let's assume that
-the new node (C<N5>) uses the TCP address of the node C<N2> as seed.  This
-cuases it to connect to C<N2>:
+the new node (C<N5>) uses the TCP address of the node C<N2> as seed. This
+causes it to connect to C<N2>:
 
    N1--N2____
    | \/ |    N5
@@ -347,7 +347,7 @@ Let's look at the next line(s):
 The C<port> function has already been discussed. It simply creates a new
 I<port> and returns the I<port ID>. The C<grp_reg> function, however, is
 new: The first argument is the name of a I<global group>, and the second
-argument is the I<port ID> to register in that group. group>.
+argument is the I<port ID> to register in that group.
 
 You can choose the name of such a I<global group> freely (prefixing your
 package name is I<highly recommended> however and might be enforce din
@@ -415,7 +415,7 @@ I<port> in the global group.
 
 =head3 Splitting Network Configuration and Application Code
 
-Ok, so far, this works. In the real world, however, the person configuring
+OK, so far, this works. In the real world, however, the person configuring
 your application to run on a specific network (the end user or network
 administrator) is often different to the person coding the application.
 
@@ -579,7 +579,7 @@ Then you will find it does not work - when the after callback is executed,
 it does not run in port context anymore, so exceptions will not be caught.
 
 For these cases, AnyEvent::MP exports a special "closure constructor"
-called C<psub>, which works just like perl's builtin C<sub>:
+called C<psub>, which works just like perls built-in C<sub>:
 
   my $port = port {
      after 1, psub { die "oops" };
@@ -988,7 +988,7 @@ The C<spawn> function creates a new port on a remote node and returns
 its port ID. After creating the port it calls a function on the remote
 node, passing any remaining arguments to it, and - most importantly -
 executes the function within the context of the new port, so it can be
-manipulated by refering to C<$SELF>. The init function can reside in a
+manipulated by referring to C<$SELF>. The init function can reside in a
 module (actually it normally I<should> reside in a module) - AnyEvent::MP
 will automatically load the module if the function isn't defined.
 
@@ -1043,8 +1043,8 @@ Bummskraut IRC backend on a machine named "ruth", I could do this:
 
    aemp profile ruth addservice BK::Backend::IRC::
 
-And any F<aemp run> on that host will automaticllay have the bummskraut
-irc backend running.
+And any F<aemp run> on that host will automatically have the Bummskraut
+IRC backend running.
 
 That's plenty of possibilities you can use - it's all up to you how you
 structure your application.
@@ -1061,7 +1061,7 @@ registering callbacks for each message type, C<Coro::MP> attached a
 messages it is interested in. Other messages are not lost, but queued, and
 can be received at a later time.
 
-The C<Coro::MP> module is not part of L<AnyEvent::MP>, but a seperate
+The C<Coro::MP> module is not part of L<AnyEvent::MP>, but a separate
 module. It is, however, tightly integrated into C<AnyEvent::MP> - the
 ports it creates are fully compatible to C<AnyEvent::MP> ports.
 
@@ -1112,8 +1112,8 @@ Let's go through it part by part.
 
    my $ioserver = port_async {
 
-Ports cna be created by attaching a thread to an existing port via
-C<rcv_async>, or as here by calling C<port_async> with the code to exeucte
+Ports can be created by attaching a thread to an existing port via
+C<rcv_async>, or as here by calling C<port_async> with the code to execute
 as a thread. The C<async> component comes from the fact that threads are
 created using the C<Coro::async> function.
 
@@ -1137,7 +1137,7 @@ The message contains the C<$path> to the file, which is then created:
             or die "$path: $!";
 
 Then we enter a loop again, to serve as many C<data> messages as
-neccessary:
+necessary:
 
          while () {
             my (undef, undef, $data) = get_cond {
@@ -1169,7 +1169,7 @@ Otherwise we need to write the data:
 
             aio_write $fh, undef, undef, $data, 0;
 
-That's basically it. Note that every process should ahve some kind of
+That's basically it. Note that every process should have some kind of
 supervisor. In our case, the supervisor simply prints any error message:
 
    mon $ioserver, sub {
@@ -1220,7 +1220,7 @@ It is also possible to switch-like C<get_conds>:
 =head1 THE END
 
 This is the end of this introduction, but hopefully not the end of
-your career als AEMP user. I hope the tutorial was enough to make the
+your career as AEMP user. I hope the tutorial was enough to make the
 basic concepts clear. Keep in mind that distributed programming is not
 completely trivial, that AnyEvent::MP is still in it's infancy, and I hope
 it will be useful to create exciting new applications.

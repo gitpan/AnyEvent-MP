@@ -254,6 +254,7 @@ sub new {
             if ($tls) {
                $self->{tls} = $lgreeting2 lt $rgreeting2 ? "connect" : "accept";
                $self->{hdl}->starttls ($self->{tls}, $self->{tls_ctx});
+               return unless $self->{hdl}; # starttls might destruct us
 
                $lauth =
                   $s_auth eq "tls_anon"       ? ""
@@ -301,8 +302,6 @@ sub new {
                $self->{remote_greeting}{untrusted} = 1
                   if $auth_method eq "tls_anon";
 
-               $self->connected;
-
                if ($protocol eq "aemp" and $self->{hdl}) {
                   # listener-less node need to continuously probe
                   unless (@$AnyEvent::MP::Kernel::LISTENER) {
@@ -312,17 +311,50 @@ sub new {
 
                   # receive handling
                   my $src_node = $self->{node};
-                  my $rmsg; $rmsg = $self->{rmsg} = sub {
-                     $_[0]->push_read ($r_framing => $rmsg);
-
-                     local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
-                     AnyEvent::MP::Kernel::_inject (@{ $_[1] });
-                  };
-                  $hdl->push_read ($r_framing => $rmsg);
-
-                  Scalar::Util::weaken $rmsg;
                   Scalar::Util::weaken $src_node;
+
+                  # optimisation
+                  my $push_write = $hdl->can ("push_write");
+                  my $push_read  = $hdl->can ("push_read");
+
+                  if ($s_framing eq "json") {
+                     $self->{send} = sub {
+                        $push_write->($hdl, JSON::XS::encode_json $_[0]);
+                     };
+                  } else {
+                     $self->{send} = sub {
+                        $push_write->($hdl, $s_framing => $_[0]);
+                     };
+                  }
+
+                  if ($r_framing eq "json") {
+                     my $coder = JSON::XS->new->utf8;
+
+                     $hdl->on_read (sub {
+                        local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+
+                        AnyEvent::MP::Kernel::_inject (@$_)
+                           for $coder->incr_parse (delete $_[0]{rbuf});
+
+                        ()
+                     });
+                  } else {
+                     my $rmsg; $rmsg = $self->{rmsg} = sub {
+                        $push_read->($_[0], $r_framing => $rmsg);
+
+                        local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+                        AnyEvent::MP::Kernel::_inject (@{ $_[1] });
+                     };
+                     eval {
+                        $push_read->($_[0], $r_framing => $rmsg);
+                     };
+                     Scalar::Util::weaken $rmsg;
+                     return $self->error ("$r_framing: unusable remote framing")
+                        if $@;
+                  }
                }
+
+               $self->connected;
             });
          });
       });
@@ -372,10 +404,6 @@ sub connected {
 
    (delete $self->{release})->()
       if exists $self->{release};
-}
-
-sub send {
-   $_[0]{hdl}->push_write ($_[0]{s_framing} => $_[1]);
 }
 
 sub destroy {
@@ -636,6 +664,50 @@ transfer only.
    ...
 
 The shared secret in use was C<8ugxrtw6H5tKnfPWfaSr4HGhE8MoJXmzTT1BWq7sLutNcD0IbXprQlZjIbl7MBKoeklG3IEfY9GlJthC0pENzk>.
+
+=head2 SIMPLE HANDSHAKE FOR NON-PERL NODES
+
+Implementing the full set of options for handshaking can be a daunting
+task.
+
+If security is not so important (because you only connect locally and
+control the host, a common case), and you want to interface with an AEMP
+node from another programming language, then you can also implement a
+simplified handshake.
+
+For example, in a simple implementation you could decide to simply not
+check the authenticity of the other side and use cleartext authentication
+yourself. The the handshake is as simple as sending three lines of text,
+reading three lines of text, and then you can exchange JSON-formatted
+messages:
+
+   aemp;1;<nodename>;hmac_md6_64_256;json
+   <nonce>
+   cleartext;<hexencoded secret>;json
+
+The nodename should be unique within the network, preferably unique with
+every connection, the <nonce> could be empty or some random data, and the
+hexencoded secret would be the shared secret, in lowercase hex (e.g. if
+the secret is "geheim", the hex-encoded version would be "67656865696d").
+
+Note that apart from the low-level handshake and framing protocol, there
+is a high-level protocol, e.g. for monitoring, building the mesh or
+spawning. All these messages are sent to the node port (the empty string)
+and can safely be ignored if you do not need the relevant functionality.
+
+=head3 USEFUL HINTS
+
+Since taking part in the global protocol to find port groups is
+nontrivial, hardcoding port names should be considered as well, i.e. the
+non-Perl node could simply listen to messages for a few well-known ports.
+
+Alternatively, the non-Perl node could call a (already loaded) function
+in the Perl node by sending it a special message:
+
+   ["", "Some::Function::name", "myownport", 1, 2, 3]
+
+This would call the function C<Some::Function::name> with the string
+C<myownport> and some additional arguments.
 
 =head2 MONITORING
 
