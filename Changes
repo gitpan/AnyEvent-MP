@@ -8,6 +8,11 @@ faq: can't se anything
 faq: all is asynch
 faq: how to interface to non-perl nodes?
 
+1.28 Thu Apr  1 21:23:54 CEST 2010
+	- accepted conenctions didn't corretcly set up the SRCNODE
+          in some cases, leading to intra-node messages (such as monitoring)
+          to fail silently (great testcase by Sadrak).
+
 1.27 Sat Mar 20 21:11:16 CET 2010
 	- avoid exceptions in the transport code if the connection
           fails during TLS negotiation.

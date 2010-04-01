@@ -310,10 +310,7 @@ sub new {
                   }
 
                   # receive handling
-                  my $src_node = $self->{node};
-                  Scalar::Util::weaken $src_node;
 
-                  # optimisation
                   my $push_write = $hdl->can ("push_write");
                   my $push_read  = $hdl->can ("push_read");
 
@@ -331,7 +328,7 @@ sub new {
                      my $coder = JSON::XS->new->utf8;
 
                      $hdl->on_read (sub {
-                        local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+                        local $AnyEvent::MP::Kernel::SRCNODE = $self->{node};
 
                         AnyEvent::MP::Kernel::_inject (@$_)
                            for $coder->incr_parse (delete $_[0]{rbuf});
@@ -342,7 +339,7 @@ sub new {
                      my $rmsg; $rmsg = $self->{rmsg} = sub {
                         $push_read->($_[0], $r_framing => $rmsg);
 
-                        local $AnyEvent::MP::Kernel::SRCNODE = $src_node;
+                        local $AnyEvent::MP::Kernel::SRCNODE = $self->{node};
                         AnyEvent::MP::Kernel::_inject (@{ $_[1] });
                      };
                      eval {

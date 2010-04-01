@@ -547,13 +547,14 @@ BEGIN {
 
       # d'oh
       require AnyEvent::Watchdog;
-      # now we can load extra modules
+      # only now can we load additional modules
+
+      require AnyEvent;
 
       require AnyEvent::Watchdog::Util;
       AnyEvent::Watchdog::Util::autorestart (1);
       AnyEvent::Watchdog::Util::heartbeat (300);
 
-      require AnyEvent;
       require AnyEvent::MP::Kernel;
       AnyEvent::MP::Kernel::configure (@ARGV);
 
