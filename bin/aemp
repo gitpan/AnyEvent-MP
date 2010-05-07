@@ -88,7 +88,7 @@ C<set> prefix.
 
 All configuration data is stored in a human-readable (JSON) config file
 stored in F<~/.perl-anyevent-mp> (or F<%appdata%/perl-anyevent-mp> on
-loser systems, or wherever C<$ENV{PERL_ANYEVENT_MPRC}> points to). Feel
+loser systems, or wherever C<$ENV{PERL_ANYEVENT_MP_RC}> points to). Feel
 free to look at it or edit it, the format is relatively simple.
 
 =head2 SPECIFYING ARGUMENTS

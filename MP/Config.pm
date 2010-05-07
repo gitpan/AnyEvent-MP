@@ -37,7 +37,6 @@ sub load {
 
    %CFG = (
       version => 1,
-      dirty   => 1,
    );
 }
 

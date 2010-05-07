@@ -334,9 +334,9 @@ sub connect {
 
          # delay broadcast by a random amount, to avoid nodes connecting to each other
          # at the same time.
-         after 1 + rand 2, sub {
+         after 2 + rand, sub {
             for my $slave (keys %SEEDME) {
-               snd $port{$slave}, nodes => { $node => $addresses };
+               snd $port{$slave} || next, nodes => { $node => $addresses };
             }
          };
       },

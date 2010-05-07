@@ -306,7 +306,7 @@ sub new {
                   # listener-less node need to continuously probe
                   unless (@$AnyEvent::MP::Kernel::LISTENER) {
                      $self->{hdl}->wtimeout ($timeout);
-                     $self->{hdl}->on_wtimeout (sub { $self->send ([]) });
+                     $self->{hdl}->on_wtimeout (sub { $self->{send}->([]) });
                   }
 
                   # receive handling

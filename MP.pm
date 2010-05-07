@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.28;
+our $VERSION = 1.29;
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -497,7 +497,7 @@ closure is executed, sets up the environment in the same way as in C<rcv>
 callbacks, i.e. runtime errors will cause the port to get C<kil>ed.
 
 The effect is basically as if it returned C<< sub { peval $SELF, sub {
-BLOCK } } >>.
+BLOCK }, @_ } >>.
 
 This is useful when you register callbacks from C<rcv> callbacks:
 
@@ -981,7 +981,7 @@ L<AnyEvent::MP::Intro> - a gentle introduction.
 
 L<AnyEvent::MP::Kernel> - more, lower-level, stuff.
 
-L<AnyEvent::MP::Global> - network maintainance and port groups, to find
+L<AnyEvent::MP::Global> - network maintenance and port groups, to find
 your applications.
 
 L<AnyEvent::MP::DataConn> - establish data connections between nodes.

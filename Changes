@@ -8,8 +8,23 @@ faq: can't se anything
 faq: all is asynch
 faq: how to interface to non-perl nodes?
 
+TODO: maybe disbale warnings by default?
+TODO: lese sadrak mails
+
+1.29 Fri May  7 20:13:39 CEST 2010
+	- codename "Sadrak".
+        - fix error in callback at AnyEvent/MP/Global.pm line 339
+          (found by Sadrak).
+	- listener-less nodes had trouble sending keepalive
+          messages on write timeouts (found by Sadrak).
+        - the monitor guard could cause a memleak due
+          to autovivification if a mon was cleared after
+          the port was gone (analysed by Sadrak).
+        - do not overwrite the config file if we couldn't read it
+          for some reason (lesson demonstrated by Sadrak).
+
 1.28 Thu Apr  1 21:23:54 CEST 2010
-	- accepted conenctions didn't corretcly set up the SRCNODE
+	- accepted connections didn't correctly set up the SRCNODE
           in some cases, leading to intra-node messages (such as monitoring)
           to fail silently (great testcase by Sadrak).
 

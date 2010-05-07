@@ -581,7 +581,8 @@ sub _monitor {
 }
 
 sub _unmonitor {
-   delete $LMON{$_[1]}{$_[2]+0};
+   delete $LMON{$_[1]}{$_[2]+0}
+      if exists $LMON{$_[1]};
 }
 
 our %node_req = (

@@ -352,7 +352,7 @@ VARIABLES/FUNCTIONS
         "kil"ed.
 
         The effect is basically as if it returned "sub { peval $SELF, sub {
-        BLOCK } }".
+        BLOCK }, @_ }".
 
         This is useful when you register callbacks from "rcv" callbacks:
 
@@ -692,8 +692,8 @@ SEE ALSO
 
     AnyEvent::MP::Kernel - more, lower-level, stuff.
 
-    AnyEvent::MP::Global - network maintainance and port groups, to find
-    your applications.
+    AnyEvent::MP::Global - network maintenance and port groups, to find your
+    applications.
 
     AnyEvent::MP::DataConn - establish data connections between nodes.
 
