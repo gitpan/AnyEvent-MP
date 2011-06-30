@@ -32,7 +32,7 @@ AnyEvent::MP - erlang-style multi-processing/message-passing framework
    # create a port on another node
    my $port = spawn $node, $initfunc, @initdata;
 
-   # destroy a prot again
+   # destroy a port again
    kil $port;  # "normal" kill
    kil $port, my_error => "everything is broken"; # error kill
 
@@ -95,7 +95,7 @@ Nodes are either public (have one or more listening ports) or private
 (no listening ports). Private nodes cannot talk to other private nodes
 currently.
 
-=item node ID - C<[A-Z_][a-zA-Z0-9_\-.:]*>
+=item node ID - C<[A-Za-z0-9_\-.:]*>
 
 A node ID is a string that uniquely identifies the node within a
 network. Depending on the configuration used, node IDs can look like a
@@ -157,7 +157,7 @@ use AE ();
 
 use base "Exporter";
 
-our $VERSION = 1.29;
+our $VERSION = '1.30';
 
 our @EXPORT = qw(
    NODE $NODE *SELF node_of after
@@ -884,10 +884,10 @@ Erlang implements few guarantees on messages delivery - messages can get
 lost without any of the processes realising it (i.e. you send messages a,
 b, and c, and the other side only receives messages a and c).
 
-AEMP guarantees correct ordering, and the guarantee that after one message
-is lost, all following ones sent to the same port are lost as well, until
-monitoring raises an error, so there are no silent "holes" in the message
-sequence.
+AEMP guarantees (modulo hardware errors) correct ordering, and the
+guarantee that after one message is lost, all following ones sent to the
+same port are lost as well, until monitoring raises an error, so there are
+no silent "holes" in the message sequence.
 
 =item * Erlang can send messages to the wrong port, AEMP does not.
 
@@ -955,7 +955,7 @@ Strings can easily be printed, easily serialised etc. and need no special
 procedures to be "valid".
 
 And as a result, a port with just a default receiver consists of a single
-closure stored in a global hash - it can't become much cheaper.
+code reference stored in a global hash - it can't become much cheaper.
 
 =item Why favour JSON, why not a real serialising format such as Storable?
 

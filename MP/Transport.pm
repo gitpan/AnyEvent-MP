@@ -182,6 +182,7 @@ sub new {
       my $lgreeting2 = MIME::Base64::encode_base64 AnyEvent::MP::Kernel::nonce (66), "";
 
       $self->{hdl}->push_write ("$lgreeting1\012$lgreeting2\012");
+      return unless $self;
 
       # expect greeting
       $self->{hdl}->rbuf_max (4 * 1024);
@@ -274,6 +275,7 @@ sub new {
             }
 
             $self->{hdl}->push_write ("$s_auth;$lauth;$s_framing\012");
+            return unless $self;
 
             # read the authentication response
             $self->{hdl}->push_read (line => sub {

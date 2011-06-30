@@ -30,7 +30,7 @@ SYNOPSIS
        # create a port on another node
        my $port = spawn $node, $initfunc, @initdata;
 
-       # destroy a prot again
+       # destroy a port again
        kil $port;  # "normal" kill
        kil $port, my_error => "everything is broken"; # error kill
 
@@ -86,7 +86,7 @@ CONCEPTS
         private (no listening ports). Private nodes cannot talk to other
         private nodes currently.
 
-    node ID - "[A-Z_][a-zA-Z0-9_\-.:]*"
+    node ID - "[A-Za-z0-9_\-.:]*"
         A node ID is a string that uniquely identifies the node within a
         network. Depending on the configuration used, node IDs can look like
         a hostname, a hostname and a port, or a random string. AnyEvent::MP
@@ -599,10 +599,10 @@ AnyEvent::MP vs. Distributed Erlang
         messages a, b, and c, and the other side only receives messages a
         and c).
 
-        AEMP guarantees correct ordering, and the guarantee that after one
-        message is lost, all following ones sent to the same port are lost
-        as well, until monitoring raises an error, so there are no silent
-        "holes" in the message sequence.
+        AEMP guarantees (modulo hardware errors) correct ordering, and the
+        guarantee that after one message is lost, all following ones sent to
+        the same port are lost as well, until monitoring raises an error, so
+        there are no silent "holes" in the message sequence.
 
     *   Erlang can send messages to the wrong port, AEMP does not.
 
@@ -668,7 +668,7 @@ RATIONALE
         special procedures to be "valid".
 
         And as a result, a port with just a default receiver consists of a
-        single closure stored in a global hash - it can't become much
+        single code reference stored in a global hash - it can't become much
         cheaper.
 
     Why favour JSON, why not a real serialising format such as Storable?

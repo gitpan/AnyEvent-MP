@@ -3,13 +3,15 @@ Revision history for AnyEvent::MP
 TODO: testsuite
 TODO: intro: maybe simple job pool example?
 TODO: intro: mention watchdog...
+TODO: maybe disbale warnings by default?
 
 faq: can't se anything
 faq: all is asynch
 faq: how to interface to non-perl nodes?
 
-TODO: maybe disbale warnings by default?
-TODO: lese sadrak mails
+1.30 Thu Jun 30 11:30:39 CEST 2011
+	- connection errors at the right time would kill node
+          connections in a bad way (patch by Malcolm Studd).
 
 1.29 Fri May  7 20:13:39 CEST 2010
 	- codename "Sadrak".
